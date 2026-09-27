@@ -5,7 +5,9 @@ import type { ListEntry } from '../types.js'
  *
  * Each product card is a `.js-product-data[data-product-id]` element carrying
  * `data-name`, `data-url`, `data-product-id`, `data-offer-id`, `data-category-*`
- * attributes. Price / rating / thumbnail are read from the card body.
+ * attributes. Price comes from the embedded `data-product` JSON payload on the
+ * favorites button (exact number, no locale parsing); rating / thumbnail /
+ * availability are read from the card body.
  */
 export function parseEmagSearchPage(html: string): ListEntry[] {
 	const cards = splitCards(html)
@@ -51,14 +53,15 @@ function splitCards(html: string): string[] {
 }
 
 function parseCard(card: string): ListEntry | null {
-	const id = attr(card, 'data-product-id')
-	const title = decodeEntities(attr(card, 'data-name'))
+	const favPayload = favoritesPayload(card)
+	const id = attr(card, 'data-product-id') || String(favPayload.productid ?? '')
+	const title = decodeEntities(attr(card, 'data-name') || favPayload.product_name || '')
 	const url = attr(card, 'data-url')
 	if (!id || !title || !url) return null
 
 	const entry: ListEntry = { title, id, url }
 
-	const offerId = attr(card, 'data-offer-id')
+	const offerId = attr(card, 'data-offer-id') || String(favPayload.offerid ?? '')
 	if (offerId) entry.offerId = offerId
 	const category = attr(card, 'data-category-name')
 	if (category) entry.category = decodeEntities(category)
@@ -70,7 +73,7 @@ function parseCard(card: string): ListEntry | null {
 		if (Number.isFinite(n)) entry.position = n
 	}
 
-	const price = parsePrice(card)
+	const price = parsePrice(card, favPayload)
 	if (price !== null) {
 		entry.price = price.value
 		entry.currency = price.currency
@@ -103,6 +106,32 @@ function attr(tag: string, name: string): string {
 	return m ? m[1] : ''
 }
 
+interface FavoritesPayload {
+	pnk?: string
+	productid?: number
+	offerid?: number
+	product_name?: string
+	price?: number
+	currency?: string
+}
+
+/**
+ * Decode the `button.add-to-favorites[data-product]` HTML-escaped JSON blob.
+ * It carries the exact numeric `price`/`currency` plus `pnk`/`productid`,
+ * so it is preferred over parsing the locale-formatted price HTML.
+ */
+function favoritesPayload(card: string): FavoritesPayload {
+	const m = card.match(/data-product="([^"]*)"/)
+	if (!m) return {}
+	try {
+		const raw = m[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&')
+		const parsed = JSON.parse(raw) as FavoritesPayload
+		return typeof parsed === 'object' && parsed !== null ? parsed : {}
+	} catch {
+		return {}
+	}
+}
+
 function decodeEntities(s: string): string {
 	return s
 		.replace(/&amp;/g, '&')
@@ -113,8 +142,16 @@ function decodeEntities(s: string): string {
 }
 
 function parsePrice(
-	card: string
+	card: string,
+	fav: FavoritesPayload
 ): { value: number; currency: string; oldValue: number | null } | null {
+	// Primary source: the `data-product` JSON payload on the favorites button
+	// (exact numeric price, no locale parsing). Same trick as arb2b's emag.py.
+	// The old (strikethrough) price only exists in HTML, so parse it regardless.
+	const oldValue = parseOldPrice(card)
+	if (Number.isFinite(fav.price)) {
+		return { value: fav.price as number, currency: fav.currency || 'RON', oldValue }
+	}
 	const m = card.match(
 		/class="product-new-price"[^>]*>\s*([\d.,\s]+)<sup>.*?<small[^>]*>([^<]*)<\/small>([^<]*)<\/sup>\s*<span>([^<]*)<\/span>/
 	)
@@ -125,13 +162,14 @@ function parsePrice(
 	if (!Number.isFinite(value)) return null
 	const currency = decodeEntities((m[4] ?? '').trim()) || 'Lei'
 
-	let oldValue: number | null = null
+	return { value, currency, oldValue: parseOldPrice(card) }
+}
+
+function parseOldPrice(card: string): number | null {
 	const old = card.match(/<s>\s*([\d.,\s]+)<sup>.*?<small[^>]*>([^<]*)<\/small>([^<]*)<\/sup>/)
-	if (old) {
-		const oi = old[1].replace(/[\s.]/g, '').replace(',', '.')
-		const of = (old[3] ?? '').replace(/\D/g, '')
-		const v = parseFloat(of ? `${oi}.${of}` : oi)
-		if (Number.isFinite(v)) oldValue = v
-	}
-	return { value, currency, oldValue }
+	if (!old) return null
+	const oi = old[1].replace(/[\s.]/g, '').replace(',', '.')
+	const of = (old[3] ?? '').replace(/\D/g, '')
+	const v = parseFloat(of ? `${oi}.${of}` : oi)
+	return Number.isFinite(v) ? v : null
 }

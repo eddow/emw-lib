@@ -10,6 +10,7 @@ const CARD = `
   data-name="Telefon mobil Nokia 106, Dual SIM, Negru" data-position="1"
   data-url="https://www.emag.ro/telefon-mobil-nokia-106-dual-sim-negru-dvrtk5bbm/pd/DTHYVBMBM/">
   <div class="card-v2">
+    <button type="button" class="add-to-favorites btn" data-product="{&quot;pnk&quot;:&quot;DTHYVBMBM&quot;,&quot;productid&quot;:29167659,&quot;offerid&quot;:83834603,&quot;product_name&quot;:&quot;Telefon mobil Nokia 106, Dual SIM, Negru&quot;,&quot;currency&quot;:&quot;RON&quot;,&quot;price&quot;:60.5}"></button>
     <a href="https://www.emag.ro/x/pd/DTHYVBMBM/" class="card-v2-thumb">
       <img src="https://example.com/img.jpg?width=720" alt="Telefon mobil Nokia 106, Dual SIM, Negru" />
     </a>
@@ -47,7 +48,7 @@ describe('parseEmagSearchPage', () => {
 			'https://www.emag.ro/telefon-mobil-nokia-106-dual-sim-negru-dvrtk5bbm/pd/DTHYVBMBM/'
 		)
 		expect(e.price).toBe(60.5)
-		expect(e.currency).toBe('Lei')
+		expect(e.currency).toBe('RON')
 		expect(e.oldPrice).toBe(69.03)
 		expect(e.rating).toBe(3.44)
 		expect(e.reviews).toBe(86)
@@ -58,6 +59,13 @@ describe('parseEmagSearchPage', () => {
 
 	it('skips cards missing id/title/url', () => {
 		expect(parseEmagSearchPage('<div>no cards here</div>')).toEqual([])
+	})
+
+	it('prefers the data-product JSON price over locale HTML', () => {
+		const noPriceHtml = CARD.replace(/<p class="product-new-price">[\s\S]*?<\/p>/, '')
+		const [e] = parseEmagSearchPage(`<div id="card_grid">${noPriceHtml}</div>`)
+		expect(e.price).toBe(60.5)
+		expect(e.currency).toBe('RON')
 	})
 })
 

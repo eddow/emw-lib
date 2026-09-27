@@ -2,13 +2,23 @@
 	"name": "emw-lib",
 	"private": true,
 	"version": "0.0.1",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/eddow/emw-lib.git"
+	},
 	"packageManager": "pnpm@11.25.0",
 	"type": "module",
+	"exports": {
+		".": {
+			"types": "./src/lib/index.ts",
+			"default": "./src/lib/index.ts"
+		},
+		"./package.json": "./package.json"
+	},
 	"scripts": {
 		"dev": "vite dev",
 		"build": "vite build",
 		"preview": "vite preview",
-		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"test:unit": "vitest",
