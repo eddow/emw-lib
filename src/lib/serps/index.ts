@@ -1,4 +1,5 @@
-export * from './types.js';
-export { createEmagAdapter, emag, emagSearchUrl } from './emag/index.js';
-export type { EmagLocale } from './emag/index.js';
-export { createAosomAdapter, aosom, aosomSearchUrl } from './aosom/index.js';
+export { aosom, aosomSearchUrl, createAosomAdapter } from './aosom/index.js'
+export type { EmagLocale } from './emag/index.js'
+export { createEmagAdapter, emag, emagSearchUrl } from './emag/index.js'
+export { createSuprevaAdapter, supreva, suprevaSearchUrl } from './supreva/index.js'
+export * from './types.js'

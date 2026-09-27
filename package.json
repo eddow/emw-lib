@@ -2,6 +2,7 @@
 	"name": "emw-lib",
 	"private": true,
 	"version": "0.0.1",
+	"packageManager": "pnpm@11.25.0",
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
@@ -11,10 +12,14 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"test:unit": "vitest",
-		"test": "npm run test:unit -- --run && npm run test:e2e",
-		"test:e2e": "playwright install && playwright test"
+		"test": "pnpm run test:unit -- --run && pnpm run test:e2e",
+		"test:e2e": "playwright install && playwright test",
+		"biome:check": "biome check .",
+		"biome:fix": "biome check --write .",
+		"biome:format": "biome format --write ."
 	},
 	"devDependencies": {
+		"@biomejs/biome": "^2.5.13",
 		"@inlang/paraglide-js": "^2.18.2",
 		"@playwright/test": "^1.60.0",
 		"@sveltejs/adapter-auto": "^7.0.1",
