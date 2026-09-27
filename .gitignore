@@ -1,0 +1,70 @@
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+.pnpm-store/
+
+# SvelteKit output
+/.svelte-kit
+/build
+/.output
+/dist
+
+# Adapters / deploy targets
+.vercel
+.netlify
+.wrangler
+.cloudflare/
+
+# Env (keep examples/tests tracked)
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# TypeScript
+*.tsbuildinfo
+
+# Tests
+test-results/
+playwright-report/
+blob-report/
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE — keep shared .vscode config, ignore local state
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/mcp.json
+*.code-workspace
+.idea/
+*.iml
+
+# Local scratch (see AGENTS.md: use tmp/, never /tmp)
+tmp/
+.tmp/
+
+# Paraglide (generated)
+src/lib/paraglide
+project.inlang/cache/
