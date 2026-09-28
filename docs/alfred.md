@@ -34,7 +34,35 @@ const credential: AlfredCredential = { token, expires_at, base_url } // from emw
 - `AlfredClient.setCredential()` swaps token + URL atomically;
   `ButlerSession.refreshToken` may return `string | AlfredCredential` and is
   retried once on `401`.
-- Server-side callers leave the token unset and use `X-Alfred-Secret`.
+- Server-side callers leave the token unset and use `webhookSecret`
+  (`X-Alfred-Secret` on `toolCallback` / `mintToken` / `expireCallbacks`).
+  The browser never holds this secret.
+
+## Tool serving: Alfred owns the webhook URL
+
+```ts
+import { toToolset } from 'emw-lib'
+import { createWebhookHandler } from 'emw-lib/alfred-server'
+
+const toolset = toToolset(tools, { max_iterations: 5 }) // URL-free callbacks
+const handler = createWebhookHandler({
+  tools,
+  baseUrl: process.env.BUTLER_URL,
+  webhookSecret: process.env.ALFRED_WEBHOOK_SECRET,
+  resolveScope: async (sessionId) => lookupScope(sessionId),
+  claim: durableClaim, // at-least-once dedupe on tool_call_id
+  waitUntil: (work) => waitUntil(work),
+})
+```
+
+- Alfred POSTs every `callback` tool call to its env-owned
+  `ALFRED_TOOL_WEBHOOK_URL` (`butler/alfred.md` §2.1); dispatch is by payload
+  `name`, correlation by `session_id` + `tool_call_id`. Per-tool
+  `execution.url` is an optional override only.
+- `toToolset` emits URL-free callbacks (plus an optional `urlOverride` for
+  tests / external tools). `createWebhookHandler` pre-wires the secret check
+  around `createToolHandler`; `server.ts` is server-only (never the browser
+  barrel).
 
 ## Chat: `sessionId` is bindable (create-or-recover)
 

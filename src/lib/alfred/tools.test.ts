@@ -60,8 +60,8 @@ function collector() {
 // ---------------------------------------------------------------------------
 
 describe('toToolset', () => {
-	it('emits every tool as a callback pointing at the webhook', () => {
-		const toolset = toToolset([echoTool()], 'https://emw.example/webhooks/alfred', {
+	it('emits every tool as a URL-free callback (Alfred owns the webhook URL)', () => {
+		const toolset = toToolset([echoTool()], {
 			max_iterations: 5,
 		})
 		expect(toolset.tools).toHaveLength(1)
@@ -71,7 +71,6 @@ describe('toToolset', () => {
 			parameters: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] },
 			execution: {
 				type: 'callback',
-				url: 'https://emw.example/webhooks/alfred',
 				timeout_ms: DEFAULT_TOOL_TIMEOUT_MS,
 			},
 		})
@@ -79,15 +78,20 @@ describe('toToolset', () => {
 	})
 
 	it('never emits an http execution (emw cannot hold a connection)', () => {
-		const toolset = toToolset([echoTool(), echoTool({ name: 'other' })], 'https://x/y')
+		const toolset = toToolset([echoTool(), echoTool({ name: 'other' })])
 		for (const tool of toolset.tools ?? []) {
 			expect(tool.execution?.type).toBe('callback')
 		}
 	})
 
 	it('honours a custom timeout', () => {
-		const toolset = toToolset([echoTool()], 'https://x/y', undefined, 3000)
+		const toolset = toToolset([echoTool()], undefined, 3000)
 		expect(toolset.tools?.[0].execution?.timeout_ms).toBe(3000)
+	})
+
+	it('accepts a url override for tests / external tools', () => {
+		const toolset = toToolset([echoTool()], undefined, DEFAULT_TOOL_TIMEOUT_MS, 'https://x/y')
+		expect(toolset.tools?.[0].execution?.url).toBe('https://x/y')
 	})
 })
 

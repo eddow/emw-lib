@@ -6,9 +6,11 @@
  * descriptor Alfred sees and the function `emw` runs cannot drift:
  *
  * - {@link toToolset} turns tools into the `toolset` sent on `POST /sessions`
- *   (every tool `callback` → the webhook URL).
+ *   (every tool URL-free `callback` — Alfred POSTs to its env-owned webhook).
  * - {@link createToolHandler} is the webhook Alfred POSTs to: verify → dedupe
  *   → `202` → execute → PUT the result back to `/sessions/{id}/tool-callback`.
+ *   Most hosts want `server.ts` (`createWebhookHandler`), which pre-wires the
+ *   secret check around this core.
  *
  * Framework-free: no Svelte, no SvelteKit, no `node:` imports, no DB. The host
  * app injects `resolveScope` (its own lookup), `claim` (durable dedupe) and
@@ -117,21 +119,30 @@ function memoryClaim(): (toolCallId: string) => Promise<boolean> {
 
 /**
  * Build the `toolset` for `POST /sessions`. Every tool is emitted as
- * `execution.type: 'callback'` pointing at `webhookUrl` — `emw` runs on Vercel
- * and cannot hold a connection, so it never uses `http` (`plans/alfred-client.md` §0).
+ * `execution.type: 'callback'` with no per-tool URL — Alfred POSTs to its
+ * env-owned `ALFRED_TOOL_WEBHOOK_URL` (`butler/alfred.md` §2.1), so dispatch
+ * is by tool `name` only. `emw` runs on Vercel and cannot hold a connection,
+ * so it never uses `http` (`plans/alfred-client.md` §0).
+ *
+ * `urlOverride` is an escape hatch for tests and stateless external `http`
+ * tools; production `emw` sessions leave it unset.
  */
 export function toToolset(
 	tools: AgentTool[],
-	webhookUrl: string,
 	policy?: ToolsetPolicy,
-	timeoutMs: number = DEFAULT_TOOL_TIMEOUT_MS
+	timeoutMs: number = DEFAULT_TOOL_TIMEOUT_MS,
+	urlOverride?: string
 ): ToolsetConfig {
 	return {
 		tools: tools.map((tool) => ({
 			name: tool.name,
 			description: tool.description,
 			parameters: tool.parameters,
-			execution: { type: 'callback', url: webhookUrl, timeout_ms: timeoutMs },
+			execution: {
+				type: 'callback',
+				...(urlOverride ? { url: urlOverride } : {}),
+				timeout_ms: timeoutMs,
+			},
 		})),
 		policy,
 	}

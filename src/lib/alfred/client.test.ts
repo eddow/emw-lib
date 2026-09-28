@@ -347,6 +347,35 @@ describe('control plane', () => {
 		})
 	})
 
+	it('guarded calls carry X-Alfred-Secret when a webhook secret is set', async () => {
+		const { fn, calls } = mockFetch(() => jsonResponse({ ok: true, expired: 0 }))
+		const client = new AlfredClient({ fetchFn: fn, webhookSecret: 's3cret' })
+		await client.toolCallback('s1', { tool_call_id: 'call_1', result: {} })
+		await client.expireCallbacks('s1')
+		await client.createSession({ agent: { model: 'm' } })
+		await client.getSession('s1')
+		const headers = (init?: RequestInit) => new Headers(init?.headers)
+		for (const c of calls) expect(headers(c.init).get('x-alfred-secret')).toBe('s3cret')
+	})
+
+	it('guarded calls omit X-Alfred-Secret when no secret is set (local dev)', async () => {
+		const { fn, calls } = mockFetch(() => jsonResponse({ ok: true, expired: 0 }))
+		const client = new AlfredClient({ fetchFn: fn })
+		await client.toolCallback('s1', { tool_call_id: 'call_1', result: {} })
+		expect(new Headers(calls[0].init?.headers).get('x-alfred-secret')).toBeNull()
+	})
+
+	it('setWebhookSecret replaces the secret for subsequent calls', async () => {
+		const { fn, calls } = mockFetch(() => jsonResponse({ ok: true, expired: 0 }))
+		const client = new AlfredClient({ fetchFn: fn, webhookSecret: 'old' })
+		client.setWebhookSecret('new')
+		await client.expireCallbacks('s1')
+		expect(new Headers(calls[0].init?.headers).get('x-alfred-secret')).toBe('new')
+		client.setWebhookSecret(undefined)
+		await client.expireCallbacks('s1')
+		expect(new Headers(calls[1].init?.headers).get('x-alfred-secret')).toBeNull()
+	})
+
 	it('expireCallbacks posts to the expire endpoint and returns the count', async () => {
 		const { fn, calls } = mockFetch(() => jsonResponse({ ok: true, expired: 3 }))
 		const client = new AlfredClient({ fetchFn: fn })
@@ -406,10 +435,11 @@ describe('auth token', () => {
 					headers: { 'content-type': 'text/event-stream' },
 				})
 		)
-		const client = new AlfredClient({ fetchFn: fn, authToken: 'tok-sse' })
+		const client = new AlfredClient({ fetchFn: fn, authToken: 'tok-sse', webhookSecret: 's3' })
 		for await (const _ of client.events('s1')) break
 		expect(header(calls[0].init, 'authorization')).toBe('Bearer tok-sse')
 		expect(header(calls[0].init, 'accept')).toBe('text/event-stream')
+		expect(header(calls[0].init, 'x-alfred-secret')).toBe('s3')
 	})
 
 	it('setAuthToken replaces the token for subsequent requests', async () => {

@@ -47,9 +47,18 @@ export interface AlfredClientOptions {
 	/**
 	 * Per-session bearer token (`butler/alfred.md` §7.1). When set, every
 	 * request carries `Authorization: Bearer <token>`. Server-side callers
-	 * leave it unset and authenticate with `X-Alfred-Secret` instead.
+	 * leave it unset and authenticate with `webhookSecret` instead.
 	 */
 	authToken?: string
+	/**
+	 * Shared secret for the server-side control plane (`butler/alfred.md`
+	 * §7). When set, EVERY call carries `X-Alfred-Secret` (the BE leg);
+	 * per-session calls additionally carry `Authorization: Bearer <token>`
+	 * when a token is set (the FE leg). The browser never holds the secret
+	 * — it uses `authToken` via `setCredential()` instead. Empty = no
+	 * header (local dev, mirroring Butler's skipped check).
+	 */
+	webhookSecret?: string
 	/** Injectable fetch, default global `fetch`. */
 	fetchFn?: FetchFn
 	/** Default timeout in ms, default {@link ALFRED_DEFAULT_TIMEOUT_MS}. A per-call `signal` wins. */
@@ -170,12 +179,14 @@ export class AlfredClient {
 	private readonly fetchFn: FetchFn
 	private readonly defaultTimeoutMs: number
 	private authToken: string | undefined
+	private webhookSecret: string | undefined
 
 	constructor(opts: AlfredClientOptions = {}) {
 		this.baseUrl = (opts.baseUrl ?? ALFRED_DEFAULT_BASE_URL).replace(/\/+$/, '')
 		this.fetchFn = opts.fetchFn ?? fetch
 		this.defaultTimeoutMs = opts.defaultTimeoutMs ?? ALFRED_DEFAULT_TIMEOUT_MS
 		this.authToken = opts.authToken
+		this.webhookSecret = opts.webhookSecret || undefined
 	}
 
 	/**
@@ -184,6 +195,14 @@ export class AlfredClient {
 	 */
 	setAuthToken(token: string | undefined): void {
 		this.authToken = token
+	}
+
+	/**
+	 * Replace the webhook secret sent as `X-Alfred-Secret` on every
+	 * server-side call. Empty/`undefined` clears it (local dev).
+	 */
+	setWebhookSecret(secret: string | undefined): void {
+		this.webhookSecret = secret || undefined
 	}
 
 	/**
@@ -201,7 +220,7 @@ export class AlfredClient {
 
 	// -- sessions ---------------------------------------------------------
 
-	/** `POST /sessions` → `{ session_id }`. */
+	/** `POST /sessions` → `{ session_id }`. BE-only: needs `X-Alfred-Secret`. */
 	async createSession(
 		input: CreateSessionInput,
 		signal?: AbortSignal
@@ -213,24 +232,24 @@ export class AlfredClient {
 			initial_prompt: input.initial_prompt,
 			metadata: input.metadata,
 		})
-		return this.json('POST', '/sessions', body, signal)
+		return this.guardedJson('POST', '/sessions', body, signal)
 	}
 
-	/** `GET /sessions` → `{ sessions }` (summaries — no `agent`/`toolset`). */
+	/** `GET /sessions` → `{ sessions }` (summaries — no `agent`/`toolset`). BE-only. */
 	async listSessions(signal?: AbortSignal): Promise<{ sessions: SessionSummary[] }> {
-		return this.json('GET', '/sessions', undefined, signal)
+		return this.guardedJson('GET', '/sessions', undefined, signal)
 	}
 
-	/** `GET /sessions/{sid}` → session info. */
+	/** `GET /sessions/{sid}` → session info. BE (secret) or FE (scoped token). */
 	async getSession(sid: string, signal?: AbortSignal): Promise<SessionInfo> {
 		assertSid(sid)
-		return this.json('GET', `/sessions/${encodeURIComponent(sid)}`, undefined, signal)
+		return this.guardedJson('GET', `/sessions/${encodeURIComponent(sid)}`, undefined, signal)
 	}
 
-	/** `DELETE /sessions/{sid}` → `{ ok: true }`. */
+	/** `DELETE /sessions/{sid}` → `{ ok: true }`. BE (secret) or FE (scoped token). */
 	async deleteSession(sid: string, signal?: AbortSignal): Promise<{ ok: true }> {
 		assertSid(sid)
-		return this.json('DELETE', `/sessions/${encodeURIComponent(sid)}`, undefined, signal)
+		return this.guardedJson('DELETE', `/sessions/${encodeURIComponent(sid)}`, undefined, signal)
 	}
 
 	// -- history / poll ---------------------------------------------------
@@ -246,7 +265,7 @@ export class AlfredClient {
 		assertAfterSeq(afterSeq)
 		const params = new URLSearchParams({ after_seq: String(afterSeq) })
 		if (type) params.set('type', type)
-		return this.json(
+		return this.guardedJson(
 			'GET',
 			`/sessions/${encodeURIComponent(sid)}/history?${params}`,
 			undefined,
@@ -273,7 +292,7 @@ export class AlfredClient {
 		// first with a spurious `timeout` error. A caller `signal` still wins.
 		const timeoutMs =
 			signal === undefined ? Math.max(this.defaultTimeoutMs, (clamped + 5) * 1000) : undefined
-		return this.json(
+		return this.guardedJson(
 			'GET',
 			`/sessions/${encodeURIComponent(sid)}/poll?${params}`,
 			undefined,
@@ -287,34 +306,34 @@ export class AlfredClient {
 	/** `POST /sessions/{sid}/stop` → pause the loop, keep state. */
 	async stop(sid: string, signal?: AbortSignal): Promise<{ ok: true; status: string }> {
 		assertSid(sid)
-		return this.json('POST', `/sessions/${encodeURIComponent(sid)}/stop`, undefined, signal)
+		return this.guardedJson('POST', `/sessions/${encodeURIComponent(sid)}/stop`, undefined, signal)
 	}
 
 	/** `POST /sessions/{sid}/resume` → resume a paused loop. */
 	async resume(sid: string, signal?: AbortSignal): Promise<{ ok: true; status: string }> {
 		assertSid(sid)
-		return this.json('POST', `/sessions/${encodeURIComponent(sid)}/resume`, undefined, signal)
+		return this.guardedJson('POST', `/sessions/${encodeURIComponent(sid)}/resume`, undefined, signal)
 	}
 
 	/** `POST /sessions/{sid}/queue` → append a user message for when the agent is done. */
 	async queue(sid: string, prompt: string, signal?: AbortSignal): Promise<{ ok: true }> {
 		assertSid(sid)
 		assertPrompt(prompt)
-		return this.json('POST', `/sessions/${encodeURIComponent(sid)}/queue`, { prompt }, signal)
+		return this.guardedJson('POST', `/sessions/${encodeURIComponent(sid)}/queue`, { prompt }, signal)
 	}
 
 	/** `POST /sessions/{sid}/steer` → inject at the next iteration boundary. */
 	async steer(sid: string, prompt: string, signal?: AbortSignal): Promise<{ ok: true }> {
 		assertSid(sid)
 		assertPrompt(prompt)
-		return this.json('POST', `/sessions/${encodeURIComponent(sid)}/steer`, { prompt }, signal)
+		return this.guardedJson('POST', `/sessions/${encodeURIComponent(sid)}/steer`, { prompt }, signal)
 	}
 
 	/** `POST /sessions/{sid}/redirect` → abort in-flight, inject immediately, resume. */
 	async redirect(sid: string, prompt: string, signal?: AbortSignal): Promise<{ ok: true }> {
 		assertSid(sid)
 		assertPrompt(prompt)
-		return this.json('POST', `/sessions/${encodeURIComponent(sid)}/redirect`, { prompt }, signal)
+		return this.guardedJson('POST', `/sessions/${encodeURIComponent(sid)}/redirect`, { prompt }, signal)
 	}
 
 	/** `POST /sessions/{sid}/tool-callback` → resume a loop paused on a `callback` tool. */
@@ -325,7 +344,7 @@ export class AlfredClient {
 	): Promise<{ ok: true }> {
 		assertSid(sid)
 		if (!body?.tool_call_id) invalid('tool_call_id is required')
-		return this.json(
+		return this.guardedJson(
 			'POST',
 			`/sessions/${encodeURIComponent(sid)}/tool-callback`,
 			compact({ tool_call_id: body.tool_call_id, result: body.result, error: body.error }),
@@ -336,7 +355,7 @@ export class AlfredClient {
 	/** `POST /sessions/{sid}/backup` → `{ ok: true, path }`. */
 	async backup(sid: string, signal?: AbortSignal): Promise<{ ok: true; path: string }> {
 		assertSid(sid)
-		return this.json('POST', `/sessions/${encodeURIComponent(sid)}/backup`, undefined, signal)
+		return this.guardedJson('POST', `/sessions/${encodeURIComponent(sid)}/backup`, undefined, signal)
 	}
 
 	/**
@@ -352,7 +371,7 @@ export class AlfredClient {
 		signal?: AbortSignal
 	): Promise<{ token: string; expires_at: string }> {
 		assertSid(sid)
-		return this.json('POST', `/sessions/${encodeURIComponent(sid)}/token`, undefined, signal)
+		return this.guardedJson('POST', `/sessions/${encodeURIComponent(sid)}/token`, undefined, signal)
 	}
 
 	/**
@@ -365,7 +384,7 @@ export class AlfredClient {
 	 */
 	async expireCallbacks(sid: string, signal?: AbortSignal): Promise<{ ok: true; expired: number }> {
 		assertSid(sid)
-		return this.json(
+		return this.guardedJson(
 			'POST',
 			`/sessions/${encodeURIComponent(sid)}/tool-callback/expire`,
 			undefined,
@@ -398,12 +417,11 @@ export class AlfredClient {
 		// SSE is a long-lived stream: never apply the implicit per-request
 		// timeout. Without a caller `signal` the loop runs until `dispose()`;
 		// with one, the caller's abort is the only deadline.
-		const res = await this.send(
-			url,
-			{ method: 'GET', headers: { accept: 'text/event-stream' } },
-			signal,
-			null
-		)
+		// The BE leg (`X-Alfred-Secret`) rides along when configured, so the
+		// same dual-auth rule as the other per-session calls applies.
+		const headers: Record<string, string> = { accept: 'text/event-stream' }
+		if (this.webhookSecret) headers['x-alfred-secret'] = this.webhookSecret
+		const res = await this.send(url, { method: 'GET', headers }, signal, null)
 		if (!res.ok) throw await this.httpError(res)
 		if (!res.body) throw new AlfredError('SSE response has no body', { code: 'parse' })
 		for await (const frame of parseSse(res.body)) yield frame as LiveEvent
@@ -506,6 +524,38 @@ export class AlfredClient {
 			init.headers = { 'content-type': 'application/json' }
 			init.body = JSON.stringify(body)
 		}
+		const res = await this.send(`${this.baseUrl}${path}`, init, signal, timeoutMs)
+		if (!res.ok) throw await this.httpError(res)
+		if (res.status === 204) return undefined as T
+		try {
+			return (await res.json()) as T
+		} catch (err) {
+			throw new AlfredError(`invalid JSON response: ${(err as Error).message}`, { code: 'parse' })
+		}
+	}
+
+	/**
+	 * JSON helper for every Alfred call: same as {@link json} but carries
+	 * `X-Alfred-Secret` when a webhook secret is configured (the BE leg).
+	 * Per-session calls additionally carry `Authorization: Bearer <token>`
+	 * via {@link send} when a token is set (the FE leg). Empty secret = no
+	 * header (local dev, mirroring Butler's skipped check).
+	 */
+	private async guardedJson<T>(
+		method: string,
+		path: string,
+		body: Record<string, unknown> | undefined,
+		signal?: AbortSignal,
+		timeoutMs?: number | null
+	): Promise<T> {
+		const init: RequestInit = { method }
+		const headers: Record<string, string> = {}
+		if (body !== undefined) {
+			headers['content-type'] = 'application/json'
+			init.body = JSON.stringify(body)
+		}
+		if (this.webhookSecret) headers['x-alfred-secret'] = this.webhookSecret
+		init.headers = headers
 		const res = await this.send(`${this.baseUrl}${path}`, init, signal, timeoutMs)
 		if (!res.ok) throw await this.httpError(res)
 		if (res.status === 204) return undefined as T

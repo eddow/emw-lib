@@ -471,12 +471,12 @@ that away. So: **one tool per jev primitive, fixed schema** —
 (score). The model chooses *which decision to make*, never *how to phrase the
 jev call*.
 
-The jev **transport** (`JevClient` with `choice`/`noul`/`score`) belongs in
-`emw-lib` next to `AlfredClient` (same injectable `fetch`, same error style);
-the jev **tools** stay in `emw`, because they need the DB to build `context`.
-
-> Open: jev's actual API is not in the workspace — only the prose in
-> `hunting.md`. `JevClient` waits until the endpoint shapes are confirmed.
+The jev **transport** (`JevClient` with `choice`/`noul`/`score`,
+`src/lib/jev/`) lives in `emw-lib` next to `AlfredClient` (same injectable
+`fetch`, same error style); the jev **tools** stay in `emw`, because they need
+the DB to build `context`. `emw` resolves the key from private
+`env.OPENROUTER_API_KEY` (server-only, never to the browser) — see
+`emw/.env.example` and `emw/docs/deploy.md`.
 
 ## 10. Generic chat (`src/lib/alfred/transcript.ts`, `Chat.svelte`)
 

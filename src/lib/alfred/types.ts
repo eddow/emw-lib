@@ -26,7 +26,12 @@ export type ExecutionType = 'http' | 'callback' | 'inline_deny'
 
 export interface ExecutionConfig {
 	type: ExecutionType
-	/** Target URL for `http` / `callback` executions. */
+	/**
+	 * Target URL for `http` / `callback` executions. Optional for
+	 * `callback`: an empty/missing url falls back to Alfred's env-owned
+	 * `ALFRED_TOOL_WEBHOOK_URL` (`butler/alfred.md` §2.1), so clients
+	 * normally omit it and dispatch is by tool `name` only.
+	 */
 	url?: string
 	timeout_ms?: number
 }
