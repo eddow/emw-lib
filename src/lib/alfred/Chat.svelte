@@ -1,119 +1,88 @@
 <script lang="ts">
 	import { AlfredClient } from './client.js'
-	import { ButlerSession, type SendMode } from './session.svelte.js'
+	import { GenerationStream } from './session.svelte.js'
 	import { buildTranscript } from './transcript.js'
-	import type { AlfredCredential, CreateSessionInput } from './types.js'
+	import type { StreamCredential } from './types.js'
 
 	/**
-	 * Minimal generic chat over a {@link ButlerSession}.
+	 * Minimal generic chat over a {@link GenerationStream} (stream-only).
 	 *
-	 * Owns its session (never a module singleton — `$state` at module scope
-	 * would leak across SSR renders). The parent supplies the credential
-	 * (`{ token, base_url }` as served by `emw`'s token route — the URL
-	 * travels WITH the token, never hardcoded) plus the agent input;
-	 * everything else — create/attach, the SSE loop, the transcript — lives
-	 * here.
+	 * Owns its stream (never a module singleton — `$state` at module scope
+	 * would leak across SSR renders). The parent supplies the stream
+	 * credential (`{ generation_id, stream_token, stream_url }` as served by
+	 * the BE's prompt/play response, forwarded over the app's priv channel —
+	 * the URL travels WITH the token, never hardcoded).
 	 *
-	 * `sessionId` is **bindable**: pass `null`/`undefined` and the chat
-	 * creates a session and writes its id back; pass an id and the chat
-	 * recovers that session (history + live stream) instead.
+	 * Sending goes browser → APP action (`onsend`) → per-policy APP call →
+	 * new credential back via `credential` prop change (remount or `attach`).
+	 * This component never creates/prompts/steers directly.
 	 *
 	 * ```svelte
-	 * <AlfredChat
-	 *   credential={{ token, base_url }}
-	 *   agent={{ model }}
-	 *   bind:sessionId={chatSessionId}
-	 * />
+	 * <AlfredChat credential={{ generation_id, stream_token, stream_url }} onsend={send} />
 	 * ```
 	 */
 	let {
 		credential,
-		agent,
-		toolset,
-		initialPrompt,
-		sessionId = $bindable(null),
-		sendMode = 'queue',
 		showThought = false,
 		placeholder = 'Ask…',
+		onsend = null,
 		onerror = null
 	}: {
 		/**
-		 * Browser credential (`{ token, expires_at?, base_url? }`) as served
-		 * by `emw`'s `POST /(priv)/agent/token`. The base URL comes from the
-		 * credential — the browser never hardcodes a host.
+		 * Stream credential (`{ generation_id, stream_token, stream_url }`)
+		 * as served by the BE's prompt/play response. The base URL comes from
+		 * the credential — the browser never hardcodes a host.
 		 */
-		credential: AlfredCredential
-		/** Agent block for `POST /sessions` (model required). */
-		agent: CreateSessionInput['agent']
-		/** Optional toolset (every tool `callback` — see §9). */
-		toolset?: CreateSessionInput['toolset']
-		/** First user message, sent on `POST /sessions`. */
-		initialPrompt?: string
-		/**
-		 * Bound session id. `null`/`undefined` → create a session and write
-		 * its id back; an id → attach + recover history instead of creating.
-		 */
-		sessionId?: string | null
-		/** How prompts reach a running agent (`queue` | `steer` | `redirect`). */
-		sendMode?: SendMode
+		credential: StreamCredential
 		/** Show the live reasoning draft alongside the answer draft. */
 		showThought?: boolean
 		/** Composer placeholder. */
 		placeholder?: string
-		/** Called with the error message on create/send/stream failures. */
+		/**
+		 * Called with the draft prompt. The host runs its APP action
+		 * (per-policy prompt/queue/steer/interrupt) and returns the new
+		 * stream credential to attach (or null to stay on the current stream).
+		 */
+		onsend?: ((prompt: string) => Promise<StreamCredential | null>) | null
+		/** Called with the error message on send/stream failures. */
 		onerror?: ((message: string) => void) | null
 	} = $props()
 
-	const session = new ButlerSession({
+	const stream = new GenerationStream({
 		// svelte-ignore state_referenced_locally: construction-time config, a remount picks up new values.
-		client: new AlfredClient({ baseUrl: credential.base_url, authToken: credential.token })
+		client: new AlfredClient({
+			baseUrl: credential.stream_url,
+			streamToken: credential.stream_token
+		})
 	})
-	$effect(() => () => session.dispose())
+	$effect(() => () => stream.dispose())
 
-	// Props are construction-time config (transport + agent input), like
-	// `ButlerSessionOptions` — capture them once, the same way `session`
-	// captures the credential above. A remount picks up new values.
-	// (`showThought` stays live: it only toggles rendering of the draft.
-	// `sessionId` is bindable but read once at start: a later parent change
-	// means "a different chat", which needs a remount, not a silent switch.)
+	// Props are construction-time config — capture once; a remount picks up
+	// new values. (`showThought` stays live: it only toggles rendering.)
 	// svelte-ignore state_referenced_locally: construction-time config, a remount picks up new values.
-	const initial = { agent, toolset, initialPrompt, sessionId, sendMode }
+	const initial = { credential }
 
 	let draft = $state('')
 	let sending = $state(false)
 
 	const transcript = $derived(
-		buildTranscript(session.history, session.events, {
-			text: session.text || undefined,
-			thought: session.thought || undefined,
+		buildTranscript([], stream.events, {
+			text: stream.text || undefined,
+			thought: stream.thought || undefined,
 			showThought
 		})
 	)
-	const busy = $derived(sending || session.isStreaming)
-	const canSend = $derived(draft.trim().length > 0 && !sending && session.id !== null)
+	const busy = $derived(sending || stream.isStreaming)
+	const canSend = $derived(draft.trim().length > 0 && !sending && stream.id !== null)
 
 	function fail(message: string): void {
-		session.error = message
+		stream.error = message
 		onerror?.(message)
 	}
 
 	async function start(): Promise<void> {
 		try {
-			if (initial.sessionId) {
-				// Recover: attach the stream, then render durable history.
-				await session.attach(initial.sessionId)
-				await session.loadHistory()
-			} else {
-				// Create: POST /sessions, then bind the new id back so the
-				// parent (chat row, URL, …) can persist it.
-				const id = await session.create({
-					agent: initial.agent,
-					toolset: initial.toolset,
-					initial_prompt: initial.initialPrompt
-				})
-				sessionId = id
-				await session.loadHistory()
-			}
+			await stream.attach(initial.credential)
 		} catch (err) {
 			fail(err instanceof Error ? err.message : String(err))
 		}
@@ -122,11 +91,16 @@
 
 	async function send(): Promise<void> {
 		const prompt = draft.trim()
-		if (!prompt || sending || !session.id) return
+		if (!prompt || sending || !stream.id) return
+		if (!onsend) {
+			fail('no send handler — the APP must provide onsend')
+			return
+		}
 		draft = ''
 		sending = true
 		try {
-			await session.send(prompt, initial.sendMode)
+			const next = await onsend(prompt)
+			if (next) await stream.attach(next)
 		} catch (err) {
 			fail(err instanceof Error ? err.message : String(err))
 		} finally {
@@ -164,11 +138,13 @@
 		{/each}
 	</div>
 
-	{#if session.error}
-		<p class="alfred-chat-error" data-testid="alfred-chat-error" role="alert">{session.error}</p>
+	{#if stream.error}
+		<p class="alfred-chat-error" data-testid="alfred-chat-error" role="alert">{stream.error}</p>
 	{/if}
 
 	<div class="alfred-chat-composer">
+		<!-- Send button kept: this is a chat composer, not a filter — Enter
+			sends (see onkeydown) and the button is the explicit send action. -->
 		<label class="alfred-chat-label" for="alfred-chat-input">Message</label>
 		<textarea
 			id="alfred-chat-input"
@@ -176,7 +152,7 @@
 			bind:value={draft}
 			{placeholder}
 			rows={2}
-			disabled={session.id === null}
+			disabled={stream.id === null}
 			{onkeydown}
 		></textarea>
 		<button
@@ -190,7 +166,7 @@
 	</div>
 
 	<p class="alfred-chat-status" data-testid="alfred-chat-status" aria-live="polite">
-		{session.status}{session.isStreaming ? ' · streaming' : ''}
+		{stream.status}{stream.isStreaming ? ' · streaming' : ''}
 	</p>
 </div>
 

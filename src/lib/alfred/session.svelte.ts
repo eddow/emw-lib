@@ -1,28 +1,35 @@
 /**
- * ButlerSession — Svelte 5 runes wrapper around {@link AlfredClient}.
+ * GenerationStream — Svelte 5 runes wrapper around {@link AlfredClient}'s
+ * stream methods (see `docs/alfred.md`: stream-only FE, control via the BE).
+ *
+ * Stream-ONLY: it owns a stream capability (`StreamCredential` from the BE's
+ * prompt/play response, forwarded over the app's priv channel), never
+ * creates/prompts/steers directly. `send()` goes browser → APP action →
+ * per-policy APP call → new credential back, then the component attaches the
+ * new stream.
  *
  * The pure core (`types.ts`, `client.ts`, `stream.ts`) stays framework-free;
  * this module is the one Svelte-aware layer on top. It owns the lifecycle a
- * consumer would otherwise wire by hand: create/attach, the SSE loop, the
- * reconnect cursor, and the reactive state a component renders.
+ * consumer would otherwise wire by hand: attach, the SSE loop, the reconnect
+ * cursor, and the reactive state a component renders.
  *
  * ```svelte
  * <script lang="ts">
- *   import { AlfredClient, ButlerSession } from '$lib'
- *   const session = new ButlerSession({ client: new AlfredClient({ baseUrl }) })
- *   $effect(() => () => session.dispose())
+ *   import { AlfredClient, GenerationStream } from '$lib'
+ *   const stream = new GenerationStream({ client: new AlfredClient({ baseUrl }) })
+ *   $effect(() => () => stream.dispose())
  * </script>
- * <p>{session.text}</p>
+ * <p>{stream.text}</p>
  * ```
  *
  * Rules:
  * - **Never a module-level singleton.** `$state` at module scope is shared
- *   across requests during SSR and would leak one session into another's
+ *   across requests during SSR and would leak one stream into another's
  *   render. Instantiate per component (or via `setContext`).
  * - **Explicit `attach()` / `dispose()`, not `$effect`.** `$effect` only runs
  *   inside a component or an effect root, so a class built in a plain module
  *   or a test would silently never subscribe. Teardown is the caller's job
- *   (one `$effect(() => () => session.dispose())` at the call site).
+ *   (one `$effect(() => () => stream.dispose())` at the call site).
  * - **Reuse {@link applyLiveEvent}.** The reducer is already unit-tested for
  *   the delta/final/cursor rules; this class is a lifecycle shell over it,
  *   never a second implementation.
@@ -30,72 +37,68 @@
 
 import { type AlfredClient, AlfredError } from './client.js'
 import { applyLiveEvent, createStreamState, isDeltaEvent, type StreamState } from './stream.js'
-import type { AlfredCredential, CreateSessionInput, HistoryItem, LiveEvent } from './types.js'
+import type { LiveEvent, StreamCredential } from './types.js'
 
 /**
- * Default cap on {@link ButlerSession.events}. Deltas are 10–100x the finals
- * (`butler/alfred.md` §4.1), so an uncapped log grows without bound on a long
- * session. Durable events are never dropped; only deltas are trimmed.
+ * Default cap on {@link GenerationStream.events}. Deltas are 10–100x the finals,
+ * so an uncapped log grows without bound on a long generation. Durable events
+ * are never dropped; only deltas are trimmed.
  */
 export const DEFAULT_EVENT_LOG_LIMIT = 500
 
-/** Session lifecycle, mirroring the server's `status` plus a client-only `streaming`. */
-export type ButlerStatus = 'idle' | 'running' | 'streaming' | 'paused' | 'done' | 'error'
+/** Stream lifecycle. */
+export type GenerationStatus = 'idle' | 'streaming' | 'paused' | 'done' | 'error'
 
-/**
- * How a prompt reaches a running agent (`butler/alfred.md` §5):
- * - `queue` — waits for `done` (server restarts a finished/paused loop).
- * - `steer` — next iteration boundary only, never aborts in-flight work.
- * - `redirect` — aborts in-flight generation, injects immediately, resumes.
- */
-export type SendMode = 'queue' | 'steer' | 'redirect'
-
-export interface ButlerSessionOptions {
-	/** The transport. Construct with `baseUrl: env.BUTLER_URL` in `emw`. */
+export interface GenerationStreamOptions {
+	/** The transport. Construct with `baseUrl: env.ALFRED_PUBLIC_URL` in `emw`. */
 	client: AlfredClient
-	/** Auto-attach the SSE loop on `create()` / `resume()`. Default `true`. */
+	/** Auto-attach the SSE loop on `attach()`. Default `true`. */
 	autoStream?: boolean
 	/**
-	 * Max entries kept in {@link ButlerSession.events}. Default
+	 * Max entries kept in {@link GenerationStream.events}. Default
 	 * {@link DEFAULT_EVENT_LOG_LIMIT}. Durable events are always kept; only
 	 * deltas are trimmed, oldest first. `0` disables the log entirely.
 	 */
 	eventLogLimit?: number
 	/**
-	 * Re-mint the bearer token when Alfred answers `401` (expired, 1h TTL).
-	 * Called at most once per failed request; the returned credential is
-	 * installed on the client via {@link AlfredClient.setCredential} (token
-	 * AND base URL travel together — see {@link AlfredCredential}) and the
-	 * request is retried, so the expiry is invisible to the user. Omit it
-	 * when the client authenticates with `X-Alfred-Secret` (server-side) or
-	 * when the token cannot expire within the session's lifetime.
+	 * Re-mint the stream capability when Alfred answers `410` (generation
+	 * ended) or `401` (expired). Called at most once per failed attach; the
+	 * returned credential is installed via
+	 * {@link AlfredClient.setStreamCredential} and the attach is retried, so
+	 * the expiry is invisible to the user. The BE's `play` endpoint is the
+	 * source — the FE never mints.
 	 */
-	refreshToken?: () => Promise<string | AlfredCredential>
+	refreshStream?: () => Promise<StreamCredential>
 }
 
-export class ButlerSession {
+/**
+ * Backwards-compatible alias: `ButlerSession` was the session-scoped stream
+ * owner; the APP now owns `AlfredSession` (BE-side) and the FE owns this
+ * `GenerationStream`. Kept so existing imports keep compiling during migration.
+ */
+export type ButlerStatus = GenerationStatus
+export type SendMode = 'queue' | 'steer' | 'interrupt'
+
+export class GenerationStream {
 	#client: AlfredClient
 	#autoStream: boolean
 	#eventLogLimit: number
-	#refreshToken: (() => Promise<string | AlfredCredential>) | undefined
+	#refreshStream: (() => Promise<StreamCredential>) | undefined
 	/** Reactive so {@link isStreaming} tracks attach/dispose. */
 	#abort = $state<AbortController | null>(null)
 
-	/** Server session id, `null` until `create()` / `attach()`. */
+	/** Server generation id, `null` until `attach()`. */
 	id = $state<string | null>(null)
 	/** Lifecycle status. */
-	status = $state<ButlerStatus>('idle')
+	status = $state<GenerationStatus>('idle')
 	/** Live drafts + reconnect cursor, reduced by {@link applyLiveEvent}. */
 	stream = $state<StreamState>(createStreamState())
 	/**
 	 * Recent live events (durable + deltas), in order. Bounded by
-	 * {@link ButlerSessionOptions.eventLogLimit}: durable events are always
-	 * kept, deltas are trimmed oldest-first. For the full durable record use
-	 * {@link loadHistory}.
+	 * {@link GenerationStreamOptions.eventLogLimit}: durable events are always
+	 * kept, deltas are trimmed oldest-first.
 	 */
 	events = $state<LiveEvent[]>([])
-	/** Durable history loaded via {@link loadHistory} (messages + events). */
-	history = $state<HistoryItem[]>([])
 	/** Last transport/stream error message, cleared on the next action. */
 	error = $state<string | null>(null)
 	/** Resolves when the current SSE loop ends. Await it in tests. */
@@ -109,16 +112,15 @@ export class ButlerSession {
 	readonly lastSeq = $derived(this.stream.lastSeq)
 	/**
 	 * Whether the SSE loop is currently attached. Derived from the abort
-	 * controller, not from `status`: `stop()` pauses the agent while the
-	 * connection stays open, so `status === 'streaming'` would under-report.
+	 * controller, not from `status`.
 	 */
 	readonly isStreaming = $derived(this.#abort !== null)
 
-	constructor(opts: ButlerSessionOptions) {
+	constructor(opts: GenerationStreamOptions) {
 		this.#client = opts.client
 		this.#autoStream = opts.autoStream ?? true
 		this.#eventLogLimit = opts.eventLogLimit ?? DEFAULT_EVENT_LOG_LIMIT
-		this.#refreshToken = opts.refreshToken
+		this.#refreshStream = opts.refreshStream
 	}
 
 	/** The underlying transport (for calls this wrapper does not cover). */
@@ -126,40 +128,35 @@ export class ButlerSession {
 		return this.#client
 	}
 
-	/** `POST /sessions`, then attach the stream. Returns the new session id. */
-	async create(input: CreateSessionInput): Promise<string> {
-		this.reset()
-		const { session_id } = await this.#client.createSession(input)
-		this.id = session_id
-		this.status = 'running'
-		if (this.#autoStream) void this.attach(session_id)
-		return session_id
-	}
-
 	/**
-	 * Attach (or re-attach) the SSE loop, replaying durable events since
-	 * {@link lastSeq}. Aborts any previous loop first. Returns a promise that
-	 * resolves when the loop ends; also stored on {@link attached}.
+	 * Attach (or re-attach) the SSE loop for a generation credential,
+	 * replaying durable events since {@link lastSeq}. Aborts any previous
+	 * loop first. Returns a promise that resolves when the loop ends; also
+	 * stored on {@link attached}.
 	 */
-	attach(sid: string | null = this.id): Promise<void> {
-		if (!sid)
-			return Promise.reject(new AlfredError('no session id to attach', { code: 'validation' }))
+	attach(credential: StreamCredential | string | null = null): Promise<void> {
+		const gid = typeof credential === 'string' ? credential : (credential?.generation_id ?? this.id)
+		if (!gid)
+			return Promise.reject(new AlfredError('no generation id to attach', { code: 'validation' }))
+		if (credential && typeof credential !== 'string') {
+			this.#client.setStreamCredential(credential)
+		}
 		this.#abort?.abort()
 		const ac = new AbortController()
 		this.#abort = ac
-		this.id = sid
+		this.id = gid
 		this.status = 'streaming'
 		this.error = null
-		const run = this.#consume(sid, ac)
+		const run = this.#consume(gid, ac)
 		this.attached = run
 		return run
 	}
 
 	/** Consume the SSE generator, reducing each event into reactive state. */
-	async #consume(sid: string, ac: AbortController): Promise<void> {
+	async #consume(gid: string, ac: AbortController): Promise<void> {
 		try {
-			await this.#withAuth(async () => {
-				for await (const evt of this.#client.events(sid, this.stream.lastSeq, ac.signal)) {
+			await this.#withStream(async () => {
+				for await (const evt of this.#client.streamEvents(gid, this.stream.lastSeq, ac.signal)) {
 					this.#ingest(evt)
 				}
 			})
@@ -174,17 +171,26 @@ export class ButlerSession {
 	}
 
 	/**
-	 * Run `fn`, re-minting the credential and retrying once on `401`. Without a
-	 * {@link ButlerSessionOptions.refreshToken} the error propagates unchanged.
+	 * Run `fn`, refreshing the stream capability and retrying once on
+	 * `401`/`410`. Without {@link GenerationStreamOptions.refreshStream} the
+	 * error propagates unchanged.
 	 */
-	async #withAuth<T>(fn: () => Promise<T>): Promise<T> {
+	async #withStream<T>(fn: () => Promise<T>): Promise<T> {
 		try {
 			return await fn()
 		} catch (err) {
-			if (!this.#refreshToken || !(err instanceof AlfredError) || err.status !== 401) throw err
-			const credential = await this.#refreshToken()
-			if (typeof credential === 'string') this.#client.setAuthToken(credential)
-			else this.#client.setCredential(credential)
+			if (
+				!this.#refreshStream ||
+				!(err instanceof AlfredError) ||
+				(err.status !== 401 && err.status !== 410)
+			)
+				throw err
+			const credential = await this.#refreshStream()
+			this.#client.setStreamCredential(credential)
+			if (credential.generation_id !== this.id) {
+				this.id = credential.generation_id
+				return await fn()
+			}
 			return await fn()
 		}
 	}
@@ -201,7 +207,7 @@ export class ButlerSession {
 	/**
 	 * Append to the bounded event log. Durable events are always kept; when the
 	 * cap is exceeded, the oldest deltas are dropped first (they are ephemeral
-	 * by design — `butler/alfred.md` §4.1).
+	 * by design).
 	 */
 	#pushEvent(evt: LiveEvent): void {
 		if (this.#eventLogLimit <= 0) return
@@ -220,79 +226,25 @@ export class ButlerSession {
 		this.events = kept
 	}
 
-	/** Send a prompt to the running agent. See {@link SendMode}. */
-	async send(prompt: string, mode: SendMode = 'queue'): Promise<void> {
-		const sid = this.#requireId()
-		this.error = null
-		await this.#withAuth(async () => {
-			if (mode === 'steer') await this.#client.steer(sid, prompt)
-			else if (mode === 'redirect') await this.#client.redirect(sid, prompt)
-			else await this.#client.queue(sid, prompt)
-		})
-		// The SSE loop survives turns; only re-attach if it had ended.
-		if (this.#autoStream && !this.#abort) void this.attach(sid)
-	}
-
-	/** Pause the loop, keeping state. */
-	async stop(): Promise<void> {
-		const sid = this.#requireId()
-		await this.#withAuth(() => this.#client.stop(sid))
-		this.status = 'paused'
-	}
-
-	/** Resume a paused loop, re-attaching the stream if needed. */
-	async resume(): Promise<void> {
-		const sid = this.#requireId()
-		await this.#withAuth(() => this.#client.resume(sid))
-		this.status = 'running'
-		if (this.#autoStream && !this.#abort) void this.attach(sid)
-	}
-
-	/**
-	 * Load durable history (messages + events, no deltas) into {@link history}.
-	 *
-	 * Also advances the reconnect cursor to the highest *event* `seq` seen, so
-	 * a later {@link attach} resumes *after* what history already showed
-	 * instead of replaying it. Message `seq`s live in an independent space
-	 * (`butler/alfred.md` §6 — `messages.seq` vs `events.seq`) and must never
-	 * move the event cursor, else `attach` would skip durable events. Pass
-	 * `afterSeq` to page older history without moving the cursor backwards.
-	 */
-	async loadHistory(afterSeq = 0): Promise<void> {
-		const sid = this.#requireId()
-		const { events } = await this.#withAuth(() => this.#client.history(sid, afterSeq))
-		this.history = events
-		const maxSeq = events.reduce(
-			(max, item) => (item.kind === 'event' ? Math.max(max, item.seq) : max),
-			0
-		)
-		if (maxSeq > this.stream.lastSeq) this.stream = { ...this.stream, lastSeq: maxSeq }
-	}
-
 	/** Abort the SSE loop. Safe to call repeatedly. */
 	dispose(): void {
 		this.#abort?.abort()
 		this.#abort = null
 	}
 
-	/** Drop all state and detach — ready for a fresh `create()`. */
+	/** Drop all state and detach — ready for a fresh `attach()`. */
 	reset(): void {
 		this.dispose()
 		this.id = null
 		this.status = 'idle'
 		this.stream = createStreamState()
 		this.events = []
-		this.history = []
 		this.error = null
 		this.attached = Promise.resolve()
 	}
-
-	/** Throw a validation error when no session is attached yet. */
-	#requireId(): string {
-		if (!this.id)
-			throw new AlfredError('session has no id — call create() or attach() first', {
-				code: 'validation',
-			})
-		return this.id
-	}
 }
+
+/** Backwards-compatible alias for `GenerationStream` (see above). */
+export const ButlerSession = GenerationStream
+export type ButlerSession = GenerationStream
+export type ButlerSessionOptions = GenerationStreamOptions

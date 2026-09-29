@@ -1,17 +1,23 @@
 <script lang="ts">
 	import Chat from './Chat.svelte'
-	import type { AlfredCredential } from './types.js'
+	import type { StreamCredential } from './types.js'
 
 	let {
 		credential,
-		sessionId = $bindable(null)
-	}: { credential?: AlfredCredential; sessionId?: string | null } = $props()
+		onsend = null
+	}: {
+		credential?: StreamCredential
+		onsend?: ((prompt: string) => Promise<StreamCredential | null>) | null
+	} = $props()
 </script>
 
 <Chat
-	credential={credential ?? { token: 'test-token', base_url: 'http://localhost:8192' }}
-	agent={{ model: 'anthropic/claude-sonnet-4' }}
-	bind:sessionId
+	credential={credential ?? {
+		generation_id: 'gen_1',
+		stream_token: 'test-token',
+		stream_url: 'http://localhost:8192/streams/gen_1'
+	}}
+	{onsend}
 />
 
-<p data-testid="host-session-id">{sessionId ?? '(none)'}</p>
+<p data-testid="host-generation-id">{credential?.generation_id ?? 'gen_1'}</p>

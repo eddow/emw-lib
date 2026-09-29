@@ -11,8 +11,7 @@ Client-safe shared library (`emw-lib/src/lib`). No `node:` imports, no
 
 ## Layout
 
-- `src/lib/alfred/` — Alfred client. Full guide: `docs/alfred.md`. Design:
-  `plans/alfred-client.md`. Protocol: `butler/alfred.md`.
+- `src/lib/alfred/` — Alfred client. Full guide: `docs/alfred.md`. Protocol: `butler/docs/alfred.md`.
 - `src/lib/serps/` — search adapters, `FetchFn`-injected.
 - `src/lib/scrappers/bodacc/` — BODACC scraper client.
 - `docs/` — `README.md` (conventions + commands), `alfred.md` (client guide).
@@ -20,18 +19,21 @@ Client-safe shared library (`emw-lib/src/lib`). No `node:` imports, no
 ## Alfred quick reference
 
 ```svelte
-<AlfredChat credential={{ token, base_url }} agent={{ model }} bind:sessionId={chatSessionId} />
+<AlfredChat credential={{ generation_id, stream_token, stream_url }} onsend={send} />
 ```
 
-- `AlfredCredential = { token, expires_at?, base_url? }` — URL travels WITH
-  the token (from `emw`'s `POST /(priv)/agent/token`); the browser never
-  hardcodes a host.
-- `sessionId` is `$bindable`: `null` → create + write back; an id → attach +
-  recover history. Read once at start — a different chat needs a remount.
+- `StreamCredential = { generation_id, stream_token, stream_url }` — from the
+  BE's prompt/play response, forwarded over the app's priv channel; the
+  browser never hardcodes a host and never mints.
+- Stream-only FE: `GenerationStream.attach(credential)` + `onsend(prompt) =>
+  Promise<StreamCredential | null>` (browser → APP action → per-policy APP
+  call → new credential back). The APP owns control; the FE opens only the
+  stream. `ButlerSession` is a deprecated alias of `GenerationStream`.
 - Core is framework-free (`types` → `client` → `stream` → `transcript`);
   only `session.svelte.ts` (runes) and `Chat.svelte` are Svelte-aware.
 - Deltas are ephemeral (never persisted, never messages); reconnect cursor is
-  durable `seq` only.
+  durable `seq` only (generation-local, from 1; `stream_id` IS the
+  `generation_id`).
 
 ## Checks (from `emw-lib/`)
 

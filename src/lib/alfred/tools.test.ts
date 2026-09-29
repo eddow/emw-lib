@@ -1,23 +1,16 @@
-import { describe, expect, it, vi } from 'vitest'
-import { AlfredClient } from './client.js'
-import { type AgentTool, createToolHandler, DEFAULT_TOOL_TIMEOUT_MS, toToolset } from './tools.js'
-import type { FetchFn } from './types.js'
+import { describe, expect, it } from 'vitest'
+import {
+	type AgentTool,
+	type BuiltinToolDef,
+	createToolHandler,
+	DEFAULT_TOOL_TIMEOUT_MS,
+	toMixedToolset,
+	toToolset,
+} from './tools.js'
 
 // ---------------------------------------------------------------------------
-// A mocked transport: records every call, answers JSON.
+// A mocked transport is no longer needed: the handler answers inline.
 // ---------------------------------------------------------------------------
-
-function mockFetch(json: unknown = { ok: true }) {
-	const calls: { url: string; init?: RequestInit }[] = []
-	const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-		calls.push({ url: String(input), init })
-		return new Response(JSON.stringify(json), {
-			status: 200,
-			headers: { 'content-type': 'application/json' },
-		})
-	})
-	return { fn: fn as unknown as FetchFn, calls }
-}
 
 /** A webhook request carrying a tool call. */
 function toolRequest(body: unknown, headers: Record<string, string> = {}): Request {
@@ -30,6 +23,7 @@ function toolRequest(body: unknown, headers: Record<string, string> = {}): Reque
 
 const CALL = {
 	session_id: 'sess-1',
+	generation_id: 'gen_1',
 	tool_call_id: 'call_1',
 	name: 'search_contacts',
 	arguments: { q: 'acme' },
@@ -46,21 +40,10 @@ function echoTool(overrides: Partial<AgentTool> = {}): AgentTool {
 	}
 }
 
-/** Collect the work handed to `waitUntil` so tests can await it. */
-function collector() {
-	const pending: Promise<unknown>[] = []
-	return {
-		waitUntil: (work: Promise<unknown>) => {
-			pending.push(work)
-		},
-		settle: () => Promise.all(pending),
-	}
-}
-
 // ---------------------------------------------------------------------------
 
 describe('toToolset', () => {
-	it('emits every tool as a URL-free callback (Alfred owns the webhook URL)', () => {
+	it('emits every tool as a URL-free callback (generation owns the webhook URL)', () => {
 		const toolset = toToolset([echoTool()], {
 			max_iterations: 5,
 		})
@@ -77,10 +60,11 @@ describe('toToolset', () => {
 		expect(toolset.policy).toEqual({ max_iterations: 5 })
 	})
 
-	it('never emits an http execution (emw cannot hold a connection)', () => {
+	it('never emits an http execution or a url', () => {
 		const toolset = toToolset([echoTool(), echoTool({ name: 'other' })])
 		for (const tool of toolset.tools ?? []) {
 			expect(tool.execution?.type).toBe('callback')
+			expect(tool.execution?.url).toBeUndefined()
 		}
 	})
 
@@ -88,49 +72,41 @@ describe('toToolset', () => {
 		const toolset = toToolset([echoTool()], undefined, 3000)
 		expect(toolset.tools?.[0].execution?.timeout_ms).toBe(3000)
 	})
-
-	it('accepts a url override for tests / external tools', () => {
-		const toolset = toToolset([echoTool()], undefined, DEFAULT_TOOL_TIMEOUT_MS, 'https://x/y')
-		expect(toolset.tools?.[0].execution?.url).toBe('https://x/y')
-	})
 })
 
 describe('createToolHandler — request handling', () => {
 	it('rejects a bad secret with 401 before any work', async () => {
-		const { fn, calls } = mockFetch()
-		const { waitUntil, settle } = collector()
+		let runs = 0
 		const handler = createToolHandler({
-			tools: [echoTool()],
-			client: new AlfredClient({ fetchFn: fn }),
+			tools: [
+				echoTool({
+					execute: async () => {
+						runs++
+						return { ok: true }
+					},
+				}),
+			],
 			authorize: (req) => req.headers.get('x-alfred-secret') === 's3cret',
-			waitUntil,
 		})
 
 		const res = await handler(toolRequest(CALL, { 'x-alfred-secret': 'wrong' }))
 		expect(res.status).toBe(401)
-		await settle()
-		expect(calls).toHaveLength(0)
+		expect(runs).toBe(0)
 	})
 
-	it('accepts the right secret', async () => {
-		const { fn } = mockFetch()
-		const { waitUntil, settle } = collector()
+	it('accepts the right secret and answers inline', async () => {
 		const handler = createToolHandler({
 			tools: [echoTool()],
-			client: new AlfredClient({ fetchFn: fn }),
 			authorize: (req) => req.headers.get('x-alfred-secret') === 's3cret',
-			waitUntil,
 		})
 		const res = await handler(toolRequest(CALL, { 'x-alfred-secret': 's3cret' }))
-		expect(res.status).toBe(202)
-		await settle()
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ result: { hits: [{ q: 'acme' }] } })
 	})
 
 	it('rejects malformed JSON and missing fields with 400', async () => {
-		const { fn } = mockFetch()
 		const handler = createToolHandler({
 			tools: [echoTool()],
-			client: new AlfredClient({ fetchFn: fn }),
 		})
 
 		expect((await handler(toolRequest('not json{'))).status).toBe(400)
@@ -138,69 +114,27 @@ describe('createToolHandler — request handling', () => {
 		expect((await handler(toolRequest({ ...CALL, tool_call_id: '' }))).status).toBe(400)
 		expect((await handler(toolRequest({ ...CALL, session_id: '' }))).status).toBe(400)
 	})
-
-	it('answers 202 without waiting for the work to finish', async () => {
-		const { fn, calls } = mockFetch()
-		// A tool that blocks until the test releases it.
-		let release!: () => void
-		const gate = new Promise<void>((resolve) => {
-			release = resolve
-		})
-		const tool = echoTool({
-			execute: async () => {
-				await gate
-				return { ok: true }
-			},
-		})
-		const { waitUntil, settle } = collector()
-		const handler = createToolHandler({
-			tools: [tool],
-			client: new AlfredClient({ fetchFn: fn }),
-			waitUntil,
-		})
-
-		const res = await handler(toolRequest(CALL))
-		// The response came back while the tool is still blocked: no PUT yet.
-		expect(res.status).toBe(202)
-		expect(calls).toHaveLength(0)
-
-		release()
-		await settle()
-		expect(calls).toHaveLength(1)
-	})
 })
 
 describe('createToolHandler — execution', () => {
-	it('executes the tool and PUTs the result to /tool-callback', async () => {
-		const { fn, calls } = mockFetch()
-		const { waitUntil, settle } = collector()
+	it('executes the tool and returns { result } inline', async () => {
 		const handler = createToolHandler({
 			tools: [echoTool()],
-			client: new AlfredClient({ fetchFn: fn }),
-			waitUntil,
 		})
 
-		await handler(toolRequest(CALL))
-		await settle()
-
-		expect(calls).toHaveLength(1)
-		expect(calls[0].url).toBe('http://localhost:8192/sessions/sess-1/tool-callback')
-		expect(calls[0].init?.method).toBe('POST')
-		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
-			tool_call_id: 'call_1',
-			result: { hits: [{ q: 'acme' }] },
-		})
+		const res = await handler(toolRequest(CALL))
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ result: { hits: [{ q: 'acme' }] } })
 	})
 
-	it('passes the resolved scope and call identity to execute', async () => {
-		const { fn } = mockFetch()
-		const { waitUntil, settle } = collector()
+	it('passes generation_id + resolved scope + call identity to execute', async () => {
 		let seen: unknown
 		const tool = echoTool({
 			execute: async (input, ctx) => {
 				seen = {
 					input,
 					sessionId: ctx.sessionId,
+					generationId: ctx.generationId,
 					toolCallId: ctx.toolCallId,
 					name: ctx.name,
 					scope: ctx.scope,
@@ -210,17 +144,15 @@ describe('createToolHandler — execution', () => {
 		})
 		const handler = createToolHandler({
 			tools: [tool],
-			client: new AlfredClient({ fetchFn: fn }),
 			resolveScope: async (sid) => ({ chatId: `chat-for-${sid}`, entityId: 'ent-1' }),
-			waitUntil,
 		})
 
 		await handler(toolRequest(CALL))
-		await settle()
 
 		expect(seen).toEqual({
 			input: { q: 'acme' },
 			sessionId: 'sess-1',
+			generationId: 'gen_1',
 			toolCallId: 'call_1',
 			name: 'search_contacts',
 			scope: { chatId: 'chat-for-sess-1', entityId: 'ent-1' },
@@ -228,8 +160,6 @@ describe('createToolHandler — execution', () => {
 	})
 
 	it('defaults arguments to {} when omitted', async () => {
-		const { fn } = mockFetch()
-		const { waitUntil, settle } = collector()
 		let seen: unknown
 		const tool = echoTool({
 			execute: async (input) => {
@@ -239,37 +169,31 @@ describe('createToolHandler — execution', () => {
 		})
 		const handler = createToolHandler({
 			tools: [tool],
-			client: new AlfredClient({ fetchFn: fn }),
-			waitUntil,
 		})
 
-		await handler(toolRequest({ session_id: 's', tool_call_id: 'c', name: 'search_contacts' }))
-		await settle()
+		const res = await handler(
+			toolRequest({
+				session_id: 's',
+				generation_id: 'g',
+				tool_call_id: 'c',
+				name: 'search_contacts',
+			})
+		)
+		expect(res.status).toBe(200)
 		expect(seen).toEqual({})
 	})
 
-	it('returns an unknown tool as { error } with 202, not a 404', async () => {
-		const { fn, calls } = mockFetch()
-		const { waitUntil, settle } = collector()
+	it('returns an unknown tool as { error } with 200, not a 404', async () => {
 		const handler = createToolHandler({
 			tools: [echoTool()],
-			client: new AlfredClient({ fetchFn: fn }),
-			waitUntil,
 		})
 
 		const res = await handler(toolRequest({ ...CALL, name: 'nope' }))
-		expect(res.status).toBe(202)
-		await settle()
-
-		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
-			tool_call_id: 'call_1',
-			error: 'unknown tool: nope',
-		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ error: 'unknown tool: nope' })
 	})
 
 	it('returns a throwing tool as { error }, never a 5xx', async () => {
-		const { fn, calls } = mockFetch()
-		const { waitUntil, settle } = collector()
 		const tool = echoTool({
 			execute: async () => {
 				throw new Error('db exploded')
@@ -277,23 +201,14 @@ describe('createToolHandler — execution', () => {
 		})
 		const handler = createToolHandler({
 			tools: [tool],
-			client: new AlfredClient({ fetchFn: fn }),
-			waitUntil,
 		})
 
 		const res = await handler(toolRequest(CALL))
-		expect(res.status).toBe(202)
-		await settle()
-
-		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
-			tool_call_id: 'call_1',
-			error: 'db exploded',
-		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ error: 'db exploded' })
 	})
 
 	it('aborts a tool that exceeds the timeout and reports it as an error', async () => {
-		const { fn, calls } = mockFetch()
-		const { waitUntil, settle } = collector()
 		const tool = echoTool({
 			execute: (_input, ctx) =>
 				new Promise((_resolve, reject) => {
@@ -302,97 +217,50 @@ describe('createToolHandler — execution', () => {
 		})
 		const handler = createToolHandler({
 			tools: [tool],
-			client: new AlfredClient({ fetchFn: fn }),
-			waitUntil,
 			timeoutMs: 5,
 		})
 
-		await handler(toolRequest(CALL))
-		await settle()
-
-		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
-			tool_call_id: 'call_1',
-			error: 'aborted',
-		})
-	})
-
-	it('swallows a failing callback PUT (Alfred times the call out)', async () => {
-		const fn = vi.fn(async () => {
-			throw new TypeError('fetch failed')
-		}) as unknown as FetchFn
-		const { waitUntil, settle } = collector()
-		const handler = createToolHandler({
-			tools: [echoTool()],
-			client: new AlfredClient({ fetchFn: fn }),
-			waitUntil,
-		})
-
-		await handler(toolRequest(CALL))
-		await expect(settle()).resolves.toBeDefined()
+		const res = await handler(toolRequest(CALL))
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ error: 'aborted' })
 	})
 })
 
-describe('createToolHandler — dedupe', () => {
-	it('treats a repeated tool_call_id as a no-op', async () => {
-		const { fn, calls } = mockFetch()
-		const { waitUntil, settle } = collector()
-		let runs = 0
-		const tool = echoTool({
-			execute: async () => {
-				runs++
-				return { ok: true }
-			},
-		})
-		const handler = createToolHandler({
-			tools: [tool],
-			client: new AlfredClient({ fetchFn: fn }),
-			waitUntil,
-		})
+describe('toMixedToolset', () => {
+	const builtin: BuiltinToolDef = {
+		name: 'web_search',
+		description: 'Keyword web search',
+		parameters: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] },
+	}
 
-		const first = await handler(toolRequest(CALL))
-		const second = await handler(toolRequest(CALL))
-		await settle()
-
-		expect(first.status).toBe(202)
-		expect(second.status).toBe(200)
-		expect(await second.json()).toEqual({ ok: true, deduped: true })
-		expect(runs).toBe(1)
-		expect(calls).toHaveLength(1)
+	it('mixes hard-coded builtins with webhook-defined callbacks', () => {
+		const toolset = toMixedToolset({
+			callbackTools: [echoTool()],
+			builtinDefs: [builtin],
+			policy: { max_iterations: 5 },
+		})
+		expect(toolset.tools).toHaveLength(2)
+		expect(toolset.tools?.[0]).toEqual({
+			...builtin,
+			execution: { type: 'builtin' },
+		})
+		expect(toolset.tools?.[1].execution?.type).toBe('callback')
+		expect(toolset.policy).toEqual({ max_iterations: 5 })
 	})
 
-	it('uses an injected claim store when provided', async () => {
-		const { fn } = mockFetch()
-		const { waitUntil, settle } = collector()
-		const claimed = new Set<string>()
-		const handler = createToolHandler({
-			tools: [echoTool()],
-			client: new AlfredClient({ fetchFn: fn }),
-			claim: async (id) => {
-				if (claimed.has(id)) return false
-				claimed.add(id)
-				return true
-			},
-			waitUntil,
+	it('lets a callback shadow a builtin of the same name', () => {
+		const toolset = toMixedToolset({
+			callbackTools: [echoTool({ name: 'web_search' })],
+			builtinDefs: [builtin],
 		})
-
-		expect((await handler(toolRequest(CALL))).status).toBe(202)
-		expect((await handler(toolRequest(CALL))).status).toBe(200)
-		await settle()
-		expect(claimed.has('call_1')).toBe(true)
+		expect(toolset.tools).toHaveLength(1)
+		expect(toolset.tools?.[0].execution?.type).toBe('callback')
 	})
 
-	it('allows distinct tool_call_ids through', async () => {
-		const { fn, calls } = mockFetch()
-		const { waitUntil, settle } = collector()
-		const handler = createToolHandler({
-			tools: [echoTool()],
-			client: new AlfredClient({ fetchFn: fn }),
-			waitUntil,
-		})
-
-		await handler(toolRequest({ ...CALL, tool_call_id: 'call_1' }))
-		await handler(toolRequest({ ...CALL, tool_call_id: 'call_2' }))
-		await settle()
-		expect(calls).toHaveLength(2)
+	it('dedupes live descriptors against the static mirror by name', () => {
+		const live = { ...builtin, description: 'stale copy from an old Alfred' }
+		const toolset = toMixedToolset({ builtinDefs: [builtin, live] })
+		expect(toolset.tools).toHaveLength(1)
+		expect(toolset.tools?.[0].description).toBe('Keyword web search')
 	})
 })

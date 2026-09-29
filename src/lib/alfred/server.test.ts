@@ -1,8 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
-import { AlfredClient } from './client.js'
+import { describe, expect, it } from 'vitest'
 import { checkWebhookSecret, createWebhookHandler } from './server.js'
 import type { AgentTool } from './tools.js'
-import type { FetchFn } from './types.js'
 
 function echoTool(): AgentTool {
 	return {
@@ -11,18 +9,6 @@ function echoTool(): AgentTool {
 		parameters: { type: 'object', properties: { q: { type: 'string' } } },
 		execute: async (input) => ({ hits: [input] }),
 	}
-}
-
-function mockFetch(json: unknown = { ok: true }) {
-	const calls: { url: string; init?: RequestInit }[] = []
-	const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-		calls.push({ url: String(input), init })
-		return new Response(JSON.stringify(json), {
-			status: 200,
-			headers: { 'content-type': 'application/json' },
-		})
-	})
-	return { fn: fn as unknown as FetchFn, calls }
 }
 
 function toolRequest(body: unknown, headers: Record<string, string> = {}): Request {
@@ -35,6 +21,7 @@ function toolRequest(body: unknown, headers: Record<string, string> = {}): Reque
 
 const CALL = {
 	session_id: 'sess-1',
+	generation_id: 'gen_1',
 	tool_call_id: 'call_1',
 	name: 'search_contacts',
 	arguments: { q: 'acme' },
@@ -58,58 +45,56 @@ describe('checkWebhookSecret', () => {
 })
 
 describe('createWebhookHandler', () => {
-	it('answers 202 and PUTs the result back with the secret', async () => {
-		const { fn, calls } = mockFetch()
-		const pending: Promise<unknown>[] = []
+	it('executes inline and returns { result } with the secret verified', async () => {
 		const handler = createWebhookHandler({
 			tools: [echoTool()],
-			client: new AlfredClient({ fetchFn: fn, webhookSecret: 's3cret' }),
 			webhookSecret: 's3cret',
-			waitUntil: (work) => void pending.push(work),
 		})
 
 		const res = await handler(toolRequest(CALL, { 'x-alfred-secret': 's3cret' }))
-		expect(res.status).toBe(202)
-		await Promise.all(pending)
-		expect(calls).toHaveLength(1)
-		expect(calls[0].url).toBe('http://localhost:8192/sessions/sess-1/tool-callback')
-		expect(new Headers(calls[0].init?.headers).get('x-alfred-secret')).toBe('s3cret')
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ result: { hits: [{ q: 'acme' }] } })
 	})
 
 	it('rejects a bad secret with 401 before any work', async () => {
-		const { fn, calls } = mockFetch()
+		let runs = 0
 		const handler = createWebhookHandler({
-			tools: [echoTool()],
-			client: new AlfredClient({ fetchFn: fn }),
+			tools: [
+				{
+					...echoTool(),
+					execute: async () => {
+						runs++
+						return { ok: true }
+					},
+				},
+			],
 			webhookSecret: 's3cret',
 		})
 		const res = await handler(toolRequest(CALL, { 'x-alfred-secret': 'wrong' }))
 		expect(res.status).toBe(401)
-		expect(calls).toHaveLength(0)
+		expect(runs).toBe(0)
 	})
 
-	it('builds its own client from baseUrl + secret when none is passed', async () => {
-		const { fn } = mockFetch()
-		const pending: Promise<unknown>[] = []
-		// Swap the global fetch so the auto-built client records its PUT-back.
-		const origFetch = globalThis.fetch
-		globalThis.fetch = fn as unknown as typeof fetch
-		try {
-			const handler = createWebhookHandler({
-				tools: [echoTool()],
-				baseUrl: 'http://butler:8192',
-				webhookSecret: 's3cret',
-				waitUntil: (work) => void pending.push(work),
-			})
-			const res = await handler(toolRequest(CALL, { 'x-alfred-secret': 's3cret' }))
-			expect(res.status).toBe(202)
-			await Promise.all(pending)
-		} finally {
-			globalThis.fetch = origFetch
-		}
-		const put = (fn as unknown as { mock: { calls: [RequestInfo | URL, RequestInit?][] } }).mock
-			.calls[0]
-		expect(String(put[0])).toBe('http://butler:8192/sessions/sess-1/tool-callback')
-		expect(new Headers(put[1]?.headers).get('x-alfred-secret')).toBe('s3cret')
+	it('passes generation_id to scope resolution', async () => {
+		let seenScope: unknown
+		const handler = createWebhookHandler({
+			tools: [echoTool()],
+			webhookSecret: 's3cret',
+			resolveScope: async (sid) => {
+				seenScope = sid
+				return { chatId: 'c1' }
+			},
+		})
+		const res = await handler(toolRequest(CALL, { 'x-alfred-secret': 's3cret' }))
+		expect(res.status).toBe(200)
+		expect(seenScope).toBe('sess-1')
+	})
+
+	it('unused AlfredClient import stays tree-shaken — handler needs no client', async () => {
+		// The handler no longer PUTs back: no client, no waitUntil, no claim.
+		const handler = createWebhookHandler({ tools: [echoTool()] })
+		const res = await handler(toolRequest(CALL))
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ result: { hits: [{ q: 'acme' }] } })
 	})
 })

@@ -2,7 +2,7 @@
  * Alfred streaming reducer — headless, no DOM.
  *
  * Frontends (`emw`'s chat widget, scripts) feed {@link LiveEvent}s from
- * {@link AlfredClient.events} / {@link AlfredClient.pollLoop} into
+ * {@link AlfredClient.streamEvents} / {@link AlfredClient.pollLoop} into
  * {@link applyLiveEvent} and render the resulting {@link StreamState}.
  *
  * Rules (mirroring `butler/alfred.md` §4):

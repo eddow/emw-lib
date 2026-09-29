@@ -1,3 +1,4 @@
+export * from './builtins.js'
 export { default as AlfredChat } from './Chat.svelte'
 export * from './client.js'
 export * from './session.svelte.js'
@@ -9,7 +10,6 @@ export * from './transcript.js'
 // top-level `$lib` barrel. The Alfred flavour is available as `AlfredFetchFn`.
 export type {
 	AgentConfig,
-	AlfredCredential,
 	AlfredEventType,
 	CreateSessionInput,
 	DeltaEvent,
@@ -24,9 +24,13 @@ export type {
 	HistoryItemEvent,
 	HistoryItemMessage,
 	LiveEvent,
+	PlayResult,
 	PollResponse,
+	PromptInput,
+	PromptResult,
 	SessionInfo,
 	SessionSummary,
+	StreamCredential,
 	ToolDef,
 	ToolsetConfig,
 	ToolsetPolicy,

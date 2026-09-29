@@ -1,36 +1,35 @@
 /**
  * Tool serving — the `emw` half of Alfred's callback contract
- * (`butler/alfred.md` §2.1, `plans/alfred-client.md` §9).
+ * (see `butler/docs/alfred.md` §2.1).
  *
  * One {@link AgentTool} produces **both** halves of the contract, so the
  * descriptor Alfred sees and the function `emw` runs cannot drift:
  *
- * - {@link toToolset} turns tools into the `toolset` sent on `POST /sessions`
- *   (every tool URL-free `callback` — Alfred POSTs to its env-owned webhook).
- * - {@link createToolHandler} is the webhook Alfred POSTs to: verify → dedupe
- *   → `202` → execute → PUT the result back to `/sessions/{id}/tool-callback`.
- *   Most hosts want `server.ts` (`createWebhookHandler`), which pre-wires the
- *   secret check around this core.
+ * - {@link toToolset} turns tools into the URL-free `toolset` sent on
+ *   `POST /sessions` (Alfred POSTs to the generation's `webhook_url`).
+ * - {@link createToolHandler} is the webhook Alfred POSTs to: verify →
+ *   execute INLINE → return `{result} | {error}` in the POST response.
+ *   No `202`, no `waitUntil`, no claim, no PUT-back (§8.1). Most hosts want
+ *   `server.ts` (`createWebhookHandler`), which pre-wires the secret check.
  *
  * Framework-free: no Svelte, no SvelteKit, no `node:` imports, no DB. The host
- * app injects `resolveScope` (its own lookup), `claim` (durable dedupe) and
- * `waitUntil` (Vercel's `waitUntil`, or fire-and-forget in tests).
+ * app injects `resolveScope` (its own lookup).
  */
 
-import type { AlfredClient } from './client.js'
-import type { ToolsetConfig, ToolsetPolicy } from './types.js'
+import type { ToolDef, ToolsetConfig, ToolsetPolicy } from './types.js'
 
 /** Default per-tool timeout, matching the `timeout_ms` in `butler/alfred.md` §2. */
 export const DEFAULT_TOOL_TIMEOUT_MS = 15_000
 
-/**
- * Execution context handed to {@link AgentTool.execute}. Carries the identity
+/** Execution context handed to {@link AgentTool.execute}. Carries the identity
  * of the call plus the host-resolved scope.
  */
 export interface ToolScope {
 	/** Alfred session id (from the wire). */
 	sessionId: string
-	/** Alfred tool call id (from the wire) — echo it back on the result. */
+	/** Generation id (from the wire) — passed into scope, logged, never trusted. */
+	generationId: string
+	/** Alfred tool call id (from the wire). */
 	toolCallId: string
 	/** Tool name (from the wire). */
 	name: string
@@ -54,9 +53,10 @@ export interface AgentTool<I = unknown, O = unknown> {
 	execute: (input: I, ctx: ToolScope) => Promise<O>
 }
 
-/** Body Alfred POSTs to the webhook (`butler/alfred.md` §2.1). */
+/** Body Alfred POSTs to the webhook (see `butler/docs/alfred.md` §2.1). */
 export interface ToolCallRequest {
 	session_id: string
+	generation_id: string
 	tool_call_id: string
 	name: string
 	arguments?: unknown
@@ -65,8 +65,6 @@ export interface ToolCallRequest {
 export interface ToolHandlerOptions {
 	/** The tools this handler serves. */
 	tools: AgentTool[]
-	/** Transport used to PUT the result back to Alfred. */
-	client: AlfredClient
 	/**
 	 * `sessionId` → scope for {@link ToolScope.scope}. The host app owns the
 	 * lookup (its session↔chat binding); the lib never reads the DB.
@@ -77,19 +75,6 @@ export interface ToolHandlerOptions {
 	 * the webhook is a public route authenticated here. Return `false` → `401`.
 	 */
 	authorize?: (req: Request) => boolean | Promise<boolean>
-	/**
-	 * Atomically claim a `tool_call_id`. Return `false` when it was already
-	 * handled → the handler answers `200` and does no work. Delivery is
-	 * at-least-once, so production should back this with a durable store
-	 * (the `webhook_events` insert-or-conflict pattern). Defaults to an
-	 * in-memory set, which is per-instance only.
-	 */
-	claim?: (toolCallId: string) => Promise<boolean>
-	/**
-	 * Run work after the `202`. Pass Vercel's `waitUntil` in production;
-	 * defaults to fire-and-forget.
-	 */
-	waitUntil?: (work: Promise<unknown>) => void
 	/** Per-tool timeout in ms. Default {@link DEFAULT_TOOL_TIMEOUT_MS}. */
 	timeoutMs?: number
 }
@@ -107,31 +92,24 @@ function message(err: unknown): string {
 	return err instanceof Error ? err.message : String(err)
 }
 
-/** In-memory claim fallback — per-instance only; see {@link ToolHandlerOptions.claim}. */
-function memoryClaim(): (toolCallId: string) => Promise<boolean> {
-	const seen = new Set<string>()
-	return async (toolCallId: string) => {
-		if (seen.has(toolCallId)) return false
-		seen.add(toolCallId)
-		return true
-	}
-}
-
 /**
  * Build the `toolset` for `POST /sessions`. Every tool is emitted as
- * `execution.type: 'callback'` with no per-tool URL — Alfred POSTs to its
- * env-owned `ALFRED_TOOL_WEBHOOK_URL` (`butler/alfred.md` §2.1), so dispatch
- * is by tool `name` only. `emw` runs on Vercel and cannot hold a connection,
- * so it never uses `http` (`plans/alfred-client.md` §0).
+ * URL-free `execution.type: 'callback'` — Alfred POSTs to the generation's
+ * `webhook_url` (see `butler/docs/alfred.md` §2.1), so dispatch is by tool `name`
+ * only. Use {@link toBuiltinToolset} (or {@link toMixedToolset} to mix
+ * hard-coded builtins with webhook-defined callbacks in one call) for tools
+ * Alfred executes in-process (`builtin`, butler `docs/tools.md` §§3–4) and
+ * {@link toPromptTool} for `emw`-defined sidecars Alfred executes
+ * (`prompt`, §7).
  *
- * `urlOverride` is an escape hatch for tests and stateless external `http`
- * tools; production `emw` sessions leave it unset.
+ * Callback tools MUST be idempotent (read-only lookups by contract, §8):
+ * re-emission on `resume`/retry is safe ONLY under this rule. Side-effecting
+ * operations are FORBIDDEN as `callback` tools in v1.
  */
 export function toToolset(
 	tools: AgentTool[],
 	policy?: ToolsetPolicy,
-	timeoutMs: number = DEFAULT_TOOL_TIMEOUT_MS,
-	urlOverride?: string
+	timeoutMs: number = DEFAULT_TOOL_TIMEOUT_MS
 ): ToolsetConfig {
 	return {
 		tools: tools.map((tool) => ({
@@ -140,7 +118,6 @@ export function toToolset(
 			parameters: tool.parameters,
 			execution: {
 				type: 'callback',
-				...(urlOverride ? { url: urlOverride } : {}),
 				timeout_ms: timeoutMs,
 			},
 		})),
@@ -148,60 +125,127 @@ export function toToolset(
 	}
 }
 
+/** A builtin tool Alfred executes in-process (butler `docs/tools.md` §§3–4). */
+export interface BuiltinToolDef {
+	name: string
+	description: string
+	parameters: { type: 'object'; properties: Record<string, unknown>; required?: string[] }
+}
+
+/**
+ * Build `ToolDef[]` entries with `execution.type: 'builtin'` for tools
+ * Alfred runs in-process — no `AgentTool.execute`, no webhook round-trip.
+ * Unknown `builtin` names resolve as `is_error` tool results, never 5xx.
+ */
+export function toBuiltinToolset(tools: BuiltinToolDef[]): ToolDef[] {
+	return tools.map((tool) => ({
+		name: tool.name,
+		description: tool.description,
+		parameters: tool.parameters,
+		execution: { type: 'builtin' },
+	}))
+}
+
+export interface PromptToolDef extends BuiltinToolDef {
+	/** Alias allowlist: `text | extract | vision | jev` (butler §7). */
+	alias: 'text' | 'extract' | 'vision' | 'jev'
+	/** Session-fixed templates (strict `{{name}}` / `{{name|json}}` subset). */
+	system_template: string
+	user_template: string
+	response_format?: Record<string, unknown>
+	max_tokens?: number
+	temperature?: number
+}
+
+/**
+ * Build one `ToolDef` with `execution.type: 'prompt'`: `emw`-defined,
+ * Alfred-executed (§7). The agent supplies only `arguments`; Alfred renders
+ * the templates server-side and calls the alias sidecar model (never the
+ * main agent model).
+ */
+export function toPromptTool(tool: PromptToolDef): ToolDef {
+	const { alias, system_template, user_template, response_format, max_tokens, temperature } = tool
+	if (!['text', 'extract', 'vision', 'jev'].includes(alias))
+		throw new Error(`toPromptTool: unknown alias: ${alias}`)
+	return {
+		name: tool.name,
+		description: tool.description,
+		parameters: tool.parameters,
+		execution: {
+			type: 'prompt',
+			alias,
+			system_template,
+			user_template,
+			...(response_format !== undefined ? { response_format } : {}),
+			...(max_tokens !== undefined ? { max_tokens } : {}),
+			...(temperature !== undefined ? { temperature } : {}),
+		},
+	}
+}
+
+export interface MixedToolsetOptions {
+	/** Webhook-defined tools (host-owned, `execution.type: 'callback'`). */
+	callbackTools?: AgentTool[]
+	/**
+	 * Hard-coded builtin descriptors to advertise
+	 * (`execution.type: 'builtin'`). Pass the static mirror
+	 * (`BUILTIN_GENERIC`/`BUILTIN_SPECIALISED` from `builtins.ts`) for
+	 * offline selection, or descriptors from `AlfredClient.listTools()`
+	 * (the live source of truth) when Alfred is reachable — or both (live
+	 * entries whose `name` duplicates a static one are skipped).
+	 */
+	builtinDefs?: BuiltinToolDef[]
+	/** `emw`-defined sidecars (`execution.type: 'prompt'`). */
+	promptTools?: PromptToolDef[]
+	policy?: ToolsetPolicy
+	timeoutMs?: number
+}
+
+/**
+ * Build a mixed session toolset: hard-coded builtins (Alfred executes
+ * in-process, no keys) + webhook-defined callbacks (the host executes via
+ * the generation's `webhook_url`) + `prompt` sidecars — so the caller
+ * selects from one list instead of wiring three `execution` types by hand.
+ *
+ * Name collisions resolve in favour of the host: a `callback` tool shadows
+ * a builtin of the same name (the host's Postgres-backed tool wins over the
+ * generic primitive).
+ */
+export function toMixedToolset(opts: MixedToolsetOptions): ToolsetConfig {
+	const callbackDefs = toToolset(
+		opts.callbackTools ?? [],
+		undefined,
+		opts.timeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS
+	).tools!
+	const callbackNames = new Set(callbackDefs.map((t) => t.name))
+	const seen = new Set<string>()
+	const builtins = toBuiltinToolset(
+		(opts.builtinDefs ?? []).filter((t) => {
+			if (seen.has(t.name) || callbackNames.has(t.name)) return false
+			seen.add(t.name)
+			return true
+		})
+	)
+	const prompts = (opts.promptTools ?? []).map(toPromptTool)
+	return {
+		tools: [...builtins, ...callbackDefs, ...prompts],
+		policy: opts.policy,
+	}
+}
+
 /**
  * Build the webhook handler Alfred POSTs tool calls to.
  *
- * Contract (`butler/alfred.md` §2.1):
- * - bad secret → `401`; malformed body → `400`; already-claimed → `200` no-op.
- * - otherwise `202` immediately, then execute and PUT the result back.
+ * Contract (see `butler/docs/alfred.md` §2.1 — synchronous):
+ * - bad secret → `401`; malformed body → `400`.
+ * - otherwise execute INLINE and return `{result} | {error}` in the POST
+ *   response itself. No `202`, no `waitUntil`, no claim, no PUT-back.
  * - unknown tool and throwing tool both go back as `{ error }` (Alfred turns
  *   them into `is_error` tool results so the model can recover) — never a 5xx.
  */
 export function createToolHandler(opts: ToolHandlerOptions): (req: Request) => Promise<Response> {
 	const byName = new Map<string, AgentTool>(opts.tools.map((t) => [t.name, t]))
-	const claim = opts.claim ?? memoryClaim()
-	const waitUntil = opts.waitUntil ?? ((work: Promise<unknown>) => void work)
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS
-
-	/** Execute one tool and PUT the outcome back to Alfred. Never throws. */
-	async function run(call: ToolCallRequest): Promise<void> {
-		const { session_id, tool_call_id, name } = call
-		const tool = byName.get(name)
-		if (!tool) {
-			await reply(session_id, tool_call_id, { error: `unknown tool: ${name}` })
-			return
-		}
-		const ac = new AbortController()
-		const timer = setTimeout(() => ac.abort(), timeoutMs)
-		try {
-			const scope = opts.resolveScope ? await opts.resolveScope(session_id) : {}
-			const result = await tool.execute(call.arguments ?? {}, {
-				sessionId: session_id,
-				toolCallId: tool_call_id,
-				name,
-				signal: ac.signal,
-				scope,
-			})
-			await reply(session_id, tool_call_id, { result })
-		} catch (err) {
-			await reply(session_id, tool_call_id, { error: message(err) })
-		} finally {
-			clearTimeout(timer)
-		}
-	}
-
-	/** PUT the outcome to `/sessions/{id}/tool-callback`, swallowing transport errors. */
-	async function reply(
-		sessionId: string,
-		toolCallId: string,
-		outcome: { result?: unknown; error?: string }
-	): Promise<void> {
-		try {
-			await opts.client.toolCallback(sessionId, { tool_call_id: toolCallId, ...outcome })
-		} catch {
-			// Alfred's timeout will resolve the call as an error; nothing to do here.
-		}
-	}
 
 	return async (req: Request): Promise<Response> => {
 		if (opts.authorize && !(await opts.authorize(req))) {
@@ -215,7 +259,7 @@ export function createToolHandler(opts: ToolHandlerOptions): (req: Request) => P
 			return json({ error: 'invalid JSON' }, 400)
 		}
 
-		const { session_id, tool_call_id, name } = body ?? {}
+		const { session_id, generation_id, tool_call_id, name } = body ?? {}
 		if (
 			typeof session_id !== 'string' ||
 			session_id === '' ||
@@ -226,18 +270,29 @@ export function createToolHandler(opts: ToolHandlerOptions): (req: Request) => P
 		) {
 			return json({ error: 'malformed request' }, 400)
 		}
+		const gid = typeof generation_id === 'string' ? generation_id : ''
 
-		if (!(await claim(tool_call_id))) {
-			return json({ ok: true, deduped: true }, 200)
+		const tool = byName.get(name)
+		if (!tool) {
+			return json({ error: `unknown tool: ${name}` }, 200)
 		}
-
-		// Defer the start so the 202 is genuinely returned before any work runs
-		// (an async function body runs synchronously up to its first `await`).
-		waitUntil(
-			Promise.resolve().then(() =>
-				run({ session_id, tool_call_id, name, arguments: body.arguments })
-			)
-		)
-		return json({ ok: true }, 202)
+		const ac = new AbortController()
+		const timer = setTimeout(() => ac.abort(), timeoutMs)
+		try {
+			const scope = opts.resolveScope ? await opts.resolveScope(session_id) : {}
+			const result = await tool.execute(body.arguments ?? {}, {
+				sessionId: session_id,
+				generationId: gid,
+				toolCallId: tool_call_id,
+				name,
+				signal: ac.signal,
+				scope,
+			})
+			return json({ result }, 200)
+		} catch (err) {
+			return json({ error: message(err) }, 200)
+		} finally {
+			clearTimeout(timer)
+		}
 	}
 }

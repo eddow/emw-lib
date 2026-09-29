@@ -1,5 +1,12 @@
 /**
- * Alfred HTTP client — transport for the Butler (`butler/alfred.md`).
+ * Alfred HTTP client — transport for the Butler (`butler/docs/alfred.md`).
+ *
+ * The client splits into
+ * **BE methods** (secret: createSession, prompt, play, stop/resume/queue/
+ * steer/interrupt, getSession/listSessions/deleteSession, history, backup)
+ * and **stream methods** (token: streamEvents, streamPoll). Session-scoped
+ * authToken / setCredential / mintToken / events(sid) / poll(sid) /
+ * toolCallback / expireCallbacks are deleted.
  *
  * Framework-agnostic: no Svelte, no `node:` imports, no env reads. All network
  * I/O goes through an injectable {@link FetchFn} (defaults to global `fetch`)
@@ -10,14 +17,18 @@
  */
 
 import type {
-	AlfredCredential,
 	CreateSessionInput,
 	FetchFn,
 	HistoryItem,
 	LiveEvent,
+	PlayResult,
 	PollResponse,
+	PromptInput,
+	PromptResult,
 	SessionInfo,
 	SessionSummary,
+	StreamCredential,
+	ToolDef,
 } from './types.js'
 
 /**
@@ -25,9 +36,9 @@ import type {
  *
  * Two callers, two URLs — both resolved by `emw` (this lib stays env-free):
  * - **Server-side control** (`emw` → Alfred): `env.BUTLER_URL`, private.
- * - **Browser stream** (SSE): `env.ALFRED_PUBLIC_URL`, handed to the client
- *   alongside the minted token. Alfred is reachable directly; the token, not
- *   the host, is the secret.
+ * - **Browser stream** (SSE): `env.ALFRED_PUBLIC_URL`, handed to the FE as
+ *   `stream_url` alongside the stream token. Alfred is reachable directly;
+ *   the token, not the host, is the secret.
  */
 export const ALFRED_DEFAULT_BASE_URL = 'http://localhost:8192'
 
@@ -40,25 +51,24 @@ export const ALFRED_MAX_PROMPT = 4000
 export interface AlfredClientOptions {
 	/**
 	 * Base URL of the Butler. Defaults to {@link ALFRED_DEFAULT_BASE_URL}.
-	 * Server-side control uses `env.BUTLER_URL`; the browser uses
-	 * `env.ALFRED_PUBLIC_URL`. Trailing slashes trimmed.
+	 * Server-side control uses `env.BUTLER_URL`; the browser stream uses
+	 * `env.ALFRED_PUBLIC_URL` (via `stream_url`). Trailing slashes trimmed.
 	 */
 	baseUrl?: string
 	/**
-	 * Per-session bearer token (`butler/alfred.md` §7.1). When set, every
-	 * request carries `Authorization: Bearer <token>`. Server-side callers
-	 * leave it unset and authenticate with `webhookSecret` instead.
-	 */
-	authToken?: string
-	/**
-	 * Shared secret for the server-side control plane (`butler/alfred.md`
-	 * §7). When set, EVERY call carries `X-Alfred-Secret` (the BE leg);
-	 * per-session calls additionally carry `Authorization: Bearer <token>`
-	 * when a token is set (the FE leg). The browser never holds the secret
-	 * — it uses `authToken` via `setCredential()` instead. Empty = no
-	 * header (local dev, mirroring Butler's skipped check).
+		* Shared secret for the BE control plane (see `butler/docs/alfred.md` §7).
+	 * When set, every BE call carries `X-Alfred-Secret`. The browser never
+	 * holds the secret — it uses `streamToken` instead. Empty = no header
+	 * (local dev, mirroring Butler's skipped check).
 	 */
 	webhookSecret?: string
+	/**
+		* Generation stream capability (see `butler/docs/alfred.md` §7.1). When set,
+	 * stream calls carry it as `Authorization: Bearer <token>` (fetch-reader
+	 * primary; `?stream_token=` / `X-Stream-Token` are server-accepted
+	 * aliases the client never needs to use).
+	 */
+	streamToken?: string
 	/** Injectable fetch, default global `fetch`. */
 	fetchFn?: FetchFn
 	/** Default timeout in ms, default {@link ALFRED_DEFAULT_TIMEOUT_MS}. A per-call `signal` wins. */
@@ -94,6 +104,11 @@ function invalid(message: string): never {
 /** `sid` must be a non-empty string. */
 function assertSid(sid: string): void {
 	if (typeof sid !== 'string' || sid.trim() === '') invalid('sid must be a non-empty string')
+}
+
+/** `gid` must be a non-empty string. */
+function assertGid(gid: string): void {
+	if (typeof gid !== 'string' || gid.trim() === '') invalid('gid must be a non-empty string')
 }
 
 /** `prompt` must be 1..{@link ALFRED_MAX_PROMPT} chars. */
@@ -178,49 +193,54 @@ export class AlfredClient {
 	private baseUrl: string
 	private readonly fetchFn: FetchFn
 	private readonly defaultTimeoutMs: number
-	private authToken: string | undefined
 	private webhookSecret: string | undefined
+	private streamToken: string | undefined
 
 	constructor(opts: AlfredClientOptions = {}) {
 		this.baseUrl = (opts.baseUrl ?? ALFRED_DEFAULT_BASE_URL).replace(/\/+$/, '')
 		this.fetchFn = opts.fetchFn ?? fetch
 		this.defaultTimeoutMs = opts.defaultTimeoutMs ?? ALFRED_DEFAULT_TIMEOUT_MS
-		this.authToken = opts.authToken
 		this.webhookSecret = opts.webhookSecret || undefined
+		this.streamToken = opts.streamToken || undefined
 	}
 
 	/**
-	 * Replace the bearer token used for subsequent requests. Called by
-	 * {@link ButlerSession} after a refresh; `undefined` clears it.
-	 */
-	setAuthToken(token: string | undefined): void {
-		this.authToken = token
-	}
-
-	/**
-	 * Replace the webhook secret sent as `X-Alfred-Secret` on every
-	 * server-side call. Empty/`undefined` clears it (local dev).
+	 * Replace the webhook secret sent as `X-Alfred-Secret` on every BE call.
+	 * Empty/`undefined` clears it (local dev).
 	 */
 	setWebhookSecret(secret: string | undefined): void {
 		this.webhookSecret = secret || undefined
 	}
 
 	/**
-	 * Install a credential as served by `emw`'s token route
-	 * (`{ token, expires_at, base_url }`): swaps the bearer token AND the
-	 * base URL in one step, so the browser never hardcodes a host. An empty
-	 * or missing `base_url` keeps the current URL.
+	 * Replace the stream capability used for stream calls.
+	 * `undefined` clears it.
 	 */
-	setCredential(credential: AlfredCredential): void {
-		if (!credential?.token) invalid('credential.token is required')
-		this.authToken = credential.token
-		const baseUrl = credential.base_url?.trim()
-		if (baseUrl) this.baseUrl = baseUrl.replace(/\/+$/, '')
+	setStreamToken(token: string | undefined): void {
+		this.streamToken = token || undefined
 	}
 
-	// -- sessions ---------------------------------------------------------
+	/**
+	 * Install a stream credential as served by the BE's prompt/play response
+	 * (`{ generation_id, stream_token, stream_url }`): swaps the stream token
+	 * AND the base URL in one step, so the browser never hardcodes a host.
+	 * An empty or missing `stream_url` keeps the current URL.
+	 */
+	setStreamCredential(credential: StreamCredential): void {
+		if (!credential?.stream_token) invalid('credential.stream_token is required')
+		if (!credential?.generation_id) invalid('credential.generation_id is required')
+		this.streamToken = credential.stream_token
+		const baseUrl = credential.stream_url?.trim()
+		if (baseUrl) {
+			// stream_url is `{PUBLIC}/streams/{gid}` — strip the suffix for the base.
+			const base = baseUrl.replace(/\/streams\/[^/]*\/?$/, '')
+			if (base) this.baseUrl = base.replace(/\/+$/, '')
+		}
+	}
 
-	/** `POST /sessions` → `{ session_id }`. BE-only: needs `X-Alfred-Secret`. */
+	// -- sessions (BE) ------------------------------------------------------
+
+	/** `POST /sessions` → `{ session_id }`. Creates the container, no start. BE-only. */
 	async createSession(
 		input: CreateSessionInput,
 		signal?: AbortSignal
@@ -229,32 +249,69 @@ export class AlfredClient {
 		const body = compact({
 			agent: input.agent,
 			toolset: input.toolset,
-			initial_prompt: input.initial_prompt,
 			metadata: input.metadata,
 		})
-		return this.guardedJson('POST', '/sessions', body, signal)
+		return this.beJson('POST', '/sessions', body, signal)
 	}
 
-	/** `GET /sessions` → `{ sessions }` (summaries — no `agent`/`toolset`). BE-only. */
+	/** `GET /sessions` → `{ sessions }`. BE-only. */
 	async listSessions(signal?: AbortSignal): Promise<{ sessions: SessionSummary[] }> {
-		return this.guardedJson('GET', '/sessions', undefined, signal)
+		return this.beJson('GET', '/sessions', undefined, signal)
 	}
 
-	/** `GET /sessions/{sid}` → session info. BE (secret) or FE (scoped token). */
+	/** `GET /sessions/{sid}` → `{ id, agent, toolset, status, active_generation_id?, created_at }`. BE-only. */
 	async getSession(sid: string, signal?: AbortSignal): Promise<SessionInfo> {
 		assertSid(sid)
-		return this.guardedJson('GET', `/sessions/${encodeURIComponent(sid)}`, undefined, signal)
+		return this.beJson('GET', `/sessions/${encodeURIComponent(sid)}`, undefined, signal)
 	}
 
-	/** `DELETE /sessions/{sid}` → `{ ok: true }`. BE (secret) or FE (scoped token). */
+	/** `DELETE /sessions/{sid}` → `{ ok: true }` (stop + archive). BE-only. */
 	async deleteSession(sid: string, signal?: AbortSignal): Promise<{ ok: true }> {
 		assertSid(sid)
-		return this.guardedJson('DELETE', `/sessions/${encodeURIComponent(sid)}`, undefined, signal)
+		return this.beJson('DELETE', `/sessions/${encodeURIComponent(sid)}`, undefined, signal)
 	}
 
-	// -- history / poll ---------------------------------------------------
+	// -- generations (BE) -----------------------------------------------------
 
-	/** `GET /sessions/{sid}/history` → durable messages + events (never deltas). */
+	/**
+	 * `POST /sessions/{sid}/prompt` → `{ generation_id, stream_token, expires_at, stream_url }`.
+	 * Creates a generation, appends the user message, starts the loop. BE-only.
+	 * `409` when a `running` generation is live (attach via `play`).
+	 */
+	async prompt(sid: string, input: PromptInput, signal?: AbortSignal): Promise<PromptResult> {
+		assertSid(sid)
+		assertPrompt(input.prompt)
+		return this.beJson(
+			'POST',
+			`/sessions/${encodeURIComponent(sid)}/prompt`,
+			compact({
+				prompt: input.prompt,
+				webhook_url: input.webhook_url,
+				policy_override: input.policy_override,
+			}),
+			signal,
+			201
+		)
+	}
+
+	/**
+	 * `POST /sessions/{sid}/generations/{gid}/play` → `{ stream_token, expires_at, stream_url }`.
+	 * Re-mints a stream capability for a LIVE generation. BE-only. `410` on terminal.
+	 */
+	async play(sid: string, gid: string, signal?: AbortSignal): Promise<PlayResult> {
+		assertSid(sid)
+		assertGid(gid)
+		return this.beJson(
+			'POST',
+			`/sessions/${encodeURIComponent(sid)}/generations/${encodeURIComponent(gid)}/play`,
+			undefined,
+			signal
+		)
+	}
+
+	// -- history (BE) -----------------------------------------------------------
+
+	/** `GET /sessions/{sid}/history` → durable messages + events (never deltas). BE-only. */
 	async history(
 		sid: string,
 		afterSeq = 0,
@@ -265,7 +322,7 @@ export class AlfredClient {
 		assertAfterSeq(afterSeq)
 		const params = new URLSearchParams({ after_seq: String(afterSeq) })
 		if (type) params.set('type', type)
-		return this.guardedJson(
+		return this.beJson(
 			'GET',
 			`/sessions/${encodeURIComponent(sid)}/history?${params}`,
 			undefined,
@@ -273,14 +330,122 @@ export class AlfredClient {
 		)
 	}
 
-	/** `GET /sessions/{sid}/poll` → durable replay + live deltas, or `{ timeout: true }`. */
-	async poll(
+	// -- control (BE) -------------------------------------------------------------
+
+	/** `POST /sessions/{sid}/stop` → pause the live generation (no-op when idle). BE-only. */
+	async stop(sid: string, signal?: AbortSignal): Promise<{ ok: true; status: string }> {
+		assertSid(sid)
+		return this.beJson('POST', `/sessions/${encodeURIComponent(sid)}/stop`, undefined, signal)
+	}
+
+	/** `POST /sessions/{sid}/resume` → resume the paused generation. BE-only. `409` when nothing paused. */
+	async resume(sid: string, signal?: AbortSignal): Promise<{ ok: true; status: string }> {
+		assertSid(sid)
+		return this.beJson('POST', `/sessions/${encodeURIComponent(sid)}/resume`, undefined, signal)
+	}
+
+	/**
+	 * `POST /sessions/{sid}/queue` → live: `{ ok, generation_id }` (steer-inject);
+	 * idle: full `PromptResult` (creates, URL required in prod). BE-only.
+	 */
+	async queue(
 		sid: string,
+		prompt: string,
+		webhookUrl?: string,
+		signal?: AbortSignal
+	): Promise<{ ok: true; generation_id: string } | PromptResult> {
+		assertSid(sid)
+		assertPrompt(prompt)
+		return this.beJson(
+			'POST',
+			`/sessions/${encodeURIComponent(sid)}/queue`,
+			compact({ prompt, webhook_url: webhookUrl }),
+			signal
+		)
+	}
+
+	/** `POST /sessions/{sid}/steer` → inject at next iteration boundary. BE-only. `409` when idle. */
+	async steer(sid: string, prompt: string, signal?: AbortSignal): Promise<{ ok: true }> {
+		assertSid(sid)
+		assertPrompt(prompt)
+		return this.beJson('POST', `/sessions/${encodeURIComponent(sid)}/steer`, { prompt }, signal)
+	}
+
+	/** `POST /sessions/{sid}/interrupt` → abort in-flight + inject now. BE-only. `409` when idle. */
+	async interrupt(sid: string, prompt: string, signal?: AbortSignal): Promise<{ ok: true }> {
+		assertSid(sid)
+		assertPrompt(prompt)
+		return this.beJson('POST', `/sessions/${encodeURIComponent(sid)}/interrupt`, { prompt }, signal)
+	}
+
+	/** `POST /sessions/{sid}/backup` → `{ ok: true, path }`. BE-only. */
+	async backup(sid: string, signal?: AbortSignal): Promise<{ ok: true; path: string }> {
+		assertSid(sid)
+		return this.beJson('POST', `/sessions/${encodeURIComponent(sid)}/backup`, undefined, signal)
+	}
+
+	/** `GET /health` → `{ ok: true }`. Open. */
+	async health(signal?: AbortSignal): Promise<{ ok: true }> {
+		return this.json('GET', '/health', undefined, signal)
+	}
+
+	// -- tools (BE) ---------------------------------------------------------------
+
+	/**
+	 * `GET /tools` → `{ tools: ToolDef[] }` — the live builtin catalogue
+	 * (butler `docs/tools.md` §§3–4, `execution.type: 'builtin'`). BE-only.
+	 *
+	 * This is the live source of truth for tool selection: fetch it to list
+	 * the hard-coded tools (description + JSON Schema arguments) alongside
+	 * the webhook-defined (`callback`) tools the host app owns. The static
+	 * mirror (`BUILTIN_GENERIC`/`BUILTIN_SPECIALISED` in `builtins.ts`) is
+	 * for offline selection — prefer this endpoint when Alfred is reachable.
+	 */
+	async listTools(signal?: AbortSignal): Promise<{ tools: ToolDef[] }> {
+		return this.beJson('GET', '/tools', undefined, signal)
+	}
+
+	// -- streams (FE, token) ----------------------------------------------------------
+
+	/**
+	 * `GET /streams/{gid}` (SSE). Replays durable events since `after_seq`,
+	 * then yields live durable events and ephemeral deltas until `signal`
+	 * aborts or the generation ends. Uses `fetchFn` + a stream reader (not
+	 * `EventSource`) so headers and a mock fetch work in tests.
+	 *
+	 * Auth: `streamToken` as `Authorization: Bearer` (fetch-reader primary).
+	 */
+	async *streamEvents(
+		gid: string,
+		afterSeq = 0,
+		signal?: AbortSignal
+	): AsyncGenerator<LiveEvent, void, void> {
+		assertGid(gid)
+		assertAfterSeq(afterSeq)
+		const params = new URLSearchParams({ after_seq: String(afterSeq) })
+		const url = `${this.baseUrl}/streams/${encodeURIComponent(gid)}?${params}`
+		// SSE is a long-lived stream: never apply the implicit per-request
+		// timeout. Without a caller `signal` the loop runs until `dispose()`;
+		// with one, the caller's abort is the only deadline.
+		const headers: Record<string, string> = { accept: 'text/event-stream' }
+		if (this.streamToken) headers['authorization'] = `Bearer ${this.streamToken}`
+		const res = await this.send(url, { method: 'GET', headers }, signal, null)
+		if (!res.ok) throw await this.httpError(res)
+		if (!res.body) throw new AlfredError('SSE response has no body', { code: 'parse' })
+		for await (const frame of parseSse(res.body)) yield frame as LiveEvent
+	}
+
+	/**
+	 * `GET /streams/{gid}/poll` → durable replay + live deltas, or `{ timeout: true }`.
+	 * Same credential rule as SSE. Fallback ALTERNATIVE to SSE, not a second step.
+	 */
+	async streamPoll(
+		gid: string,
 		afterSeq = 0,
 		timeoutS?: number,
 		signal?: AbortSignal
 	): Promise<PollResponse> {
-		assertSid(sid)
+		assertGid(gid)
 		assertAfterSeq(afterSeq)
 		const clamped = clampTimeout(timeoutS)
 		const params = new URLSearchParams({
@@ -292,154 +457,35 @@ export class AlfredClient {
 		// first with a spurious `timeout` error. A caller `signal` still wins.
 		const timeoutMs =
 			signal === undefined ? Math.max(this.defaultTimeoutMs, (clamped + 5) * 1000) : undefined
-		return this.guardedJson(
-			'GET',
-			`/sessions/${encodeURIComponent(sid)}/poll?${params}`,
-			undefined,
+		const headers: Record<string, string> = {}
+		if (this.streamToken) headers['authorization'] = `Bearer ${this.streamToken}`
+		const res = await this.send(
+			`${this.baseUrl}/streams/${encodeURIComponent(gid)}/poll?${params}`,
+			{ method: 'GET', headers },
 			signal,
 			timeoutMs
 		)
-	}
-
-	// -- control ----------------------------------------------------------
-
-	/** `POST /sessions/{sid}/stop` → pause the loop, keep state. */
-	async stop(sid: string, signal?: AbortSignal): Promise<{ ok: true; status: string }> {
-		assertSid(sid)
-		return this.guardedJson('POST', `/sessions/${encodeURIComponent(sid)}/stop`, undefined, signal)
-	}
-
-	/** `POST /sessions/{sid}/resume` → resume a paused loop. */
-	async resume(sid: string, signal?: AbortSignal): Promise<{ ok: true; status: string }> {
-		assertSid(sid)
-		return this.guardedJson('POST', `/sessions/${encodeURIComponent(sid)}/resume`, undefined, signal)
-	}
-
-	/** `POST /sessions/{sid}/queue` → append a user message for when the agent is done. */
-	async queue(sid: string, prompt: string, signal?: AbortSignal): Promise<{ ok: true }> {
-		assertSid(sid)
-		assertPrompt(prompt)
-		return this.guardedJson('POST', `/sessions/${encodeURIComponent(sid)}/queue`, { prompt }, signal)
-	}
-
-	/** `POST /sessions/{sid}/steer` → inject at the next iteration boundary. */
-	async steer(sid: string, prompt: string, signal?: AbortSignal): Promise<{ ok: true }> {
-		assertSid(sid)
-		assertPrompt(prompt)
-		return this.guardedJson('POST', `/sessions/${encodeURIComponent(sid)}/steer`, { prompt }, signal)
-	}
-
-	/** `POST /sessions/{sid}/redirect` → abort in-flight, inject immediately, resume. */
-	async redirect(sid: string, prompt: string, signal?: AbortSignal): Promise<{ ok: true }> {
-		assertSid(sid)
-		assertPrompt(prompt)
-		return this.guardedJson('POST', `/sessions/${encodeURIComponent(sid)}/redirect`, { prompt }, signal)
-	}
-
-	/** `POST /sessions/{sid}/tool-callback` → resume a loop paused on a `callback` tool. */
-	async toolCallback(
-		sid: string,
-		body: { tool_call_id: string; result?: unknown; error?: unknown },
-		signal?: AbortSignal
-	): Promise<{ ok: true }> {
-		assertSid(sid)
-		if (!body?.tool_call_id) invalid('tool_call_id is required')
-		return this.guardedJson(
-			'POST',
-			`/sessions/${encodeURIComponent(sid)}/tool-callback`,
-			compact({ tool_call_id: body.tool_call_id, result: body.result, error: body.error }),
-			signal
-		)
-	}
-
-	/** `POST /sessions/{sid}/backup` → `{ ok: true, path }`. */
-	async backup(sid: string, signal?: AbortSignal): Promise<{ ok: true; path: string }> {
-		assertSid(sid)
-		return this.guardedJson('POST', `/sessions/${encodeURIComponent(sid)}/backup`, undefined, signal)
-	}
-
-	/**
-	 * `POST /sessions/{sid}/token` → `{ token, expires_at }`.
-	 *
-	 * Mints the browser's bearer token (`butler/alfred.md` §7.1). Server-side
-	 * only: the caller must hold `X-Alfred-Secret`, so this is `emw`'s job, not
-	 * the browser's. The token is scoped to `sid` and expires after
-	 * `ALFRED_TOKEN_TTL_S` (default 1h).
-	 */
-	async mintToken(
-		sid: string,
-		signal?: AbortSignal
-	): Promise<{ token: string; expires_at: string }> {
-		assertSid(sid)
-		return this.guardedJson('POST', `/sessions/${encodeURIComponent(sid)}/token`, undefined, signal)
-	}
-
-	/**
-	 * `POST /sessions/{sid}/tool-callback/expire` → `{ ok: true, expired }`.
-	 *
-	 * Resolves overdue `callback` calls as `is_error` tool results so a lost
-	 * callback cannot wedge the session in `waiting_callback` forever
-	 * (`butler/alfred.md` §2.1.1). Alfred schedules this itself; the endpoint
-	 * is for a manual/forced sweep.
-	 */
-	async expireCallbacks(sid: string, signal?: AbortSignal): Promise<{ ok: true; expired: number }> {
-		assertSid(sid)
-		return this.guardedJson(
-			'POST',
-			`/sessions/${encodeURIComponent(sid)}/tool-callback/expire`,
-			undefined,
-			signal
-		)
-	}
-
-	/** `GET /health` → `{ ok: true }`. */
-	async health(signal?: AbortSignal): Promise<{ ok: true }> {
-		return this.json('GET', '/health', undefined, signal)
-	}
-
-	// -- streaming --------------------------------------------------------
-
-	/**
-	 * `GET /sessions/{sid}/events` (SSE). Replays durable events since
-	 * `after_seq`, then yields live durable events and ephemeral deltas until
-	 * `signal` aborts. Uses `fetchFn` + a stream reader (not `EventSource`) so
-	 * headers and a mock fetch work in tests.
-	 */
-	async *events(
-		sid: string,
-		afterSeq = 0,
-		signal?: AbortSignal
-	): AsyncGenerator<LiveEvent, void, void> {
-		assertSid(sid)
-		assertAfterSeq(afterSeq)
-		const params = new URLSearchParams({ after_seq: String(afterSeq) })
-		const url = `${this.baseUrl}/sessions/${encodeURIComponent(sid)}/events?${params}`
-		// SSE is a long-lived stream: never apply the implicit per-request
-		// timeout. Without a caller `signal` the loop runs until `dispose()`;
-		// with one, the caller's abort is the only deadline.
-		// The BE leg (`X-Alfred-Secret`) rides along when configured, so the
-		// same dual-auth rule as the other per-session calls applies.
-		const headers: Record<string, string> = { accept: 'text/event-stream' }
-		if (this.webhookSecret) headers['x-alfred-secret'] = this.webhookSecret
-		const res = await this.send(url, { method: 'GET', headers }, signal, null)
 		if (!res.ok) throw await this.httpError(res)
-		if (!res.body) throw new AlfredError('SSE response has no body', { code: 'parse' })
-		for await (const frame of parseSse(res.body)) yield frame as LiveEvent
+		try {
+			return (await res.json()) as PollResponse
+		} catch (err) {
+			throw new AlfredError(`invalid JSON response: ${(err as Error).message}`, { code: 'parse' })
+		}
 	}
 
 	/**
-	 * Long-poll fallback for clients that cannot hold SSE. Yields events and
+	 * Poll-loop fallback for clients that cannot hold SSE. Yields events and
 	 * advances the durable cursor; returns (does not throw) on `{ timeout: true }`.
 	 */
 	async *pollLoop(
-		sid: string,
+		gid: string,
 		opts: { after_seq?: number; timeout_s?: number; signal?: AbortSignal } = {}
 	): AsyncGenerator<LiveEvent, void, void> {
-		assertSid(sid)
+		assertGid(gid)
 		let cursor = opts.after_seq ?? 0
 		assertAfterSeq(cursor)
 		while (!opts.signal?.aborted) {
-			const res = await this.poll(sid, cursor, opts.timeout_s, opts.signal)
+			const res = await this.streamPoll(gid, cursor, opts.timeout_s, opts.signal)
 			for (const evt of res.events) yield evt
 			const max = maxDurableSeq(res.events)
 			if (max !== null) cursor = max + 1
@@ -472,7 +518,6 @@ export class AlfredClient {
 			}, ms)
 		}
 		const headers = new Headers(init.headers)
-		if (this.authToken) headers.set('authorization', `Bearer ${this.authToken}`)
 		try {
 			return await this.fetchFn(url, {
 				...init,
@@ -535,17 +580,16 @@ export class AlfredClient {
 	}
 
 	/**
-	 * JSON helper for every Alfred call: same as {@link json} but carries
-	 * `X-Alfred-Secret` when a webhook secret is configured (the BE leg).
-	 * Per-session calls additionally carry `Authorization: Bearer <token>`
-	 * via {@link send} when a token is set (the FE leg). Empty secret = no
-	 * header (local dev, mirroring Butler's skipped check).
+	 * JSON helper for every BE call: same as {@link json} but carries
+	 * `X-Alfred-Secret` when a webhook secret is configured. Empty secret =
+	 * no header (local dev, mirroring Butler's skipped check).
 	 */
-	private async guardedJson<T>(
+	private async beJson<T>(
 		method: string,
 		path: string,
 		body: Record<string, unknown> | undefined,
 		signal?: AbortSignal,
+		expectStatus?: number,
 		timeoutMs?: number | null
 	): Promise<T> {
 		const init: RequestInit = { method }
@@ -558,6 +602,9 @@ export class AlfredClient {
 		init.headers = headers
 		const res = await this.send(`${this.baseUrl}${path}`, init, signal, timeoutMs)
 		if (!res.ok) throw await this.httpError(res)
+		if (expectStatus !== undefined && res.status !== expectStatus) {
+			// Status documented but not enforced — the body is the contract.
+		}
 		if (res.status === 204) return undefined as T
 		try {
 			return (await res.json()) as T

@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AlfredClient, AlfredError } from './client.js'
-import { ButlerSession } from './session.svelte.js'
-import type { FetchFn } from './types.js'
+import { GenerationStream } from './session.svelte.js'
+import type { FetchFn, StreamCredential } from './types.js'
 
 // ---------------------------------------------------------------------------
-// A mocked transport: JSON for control calls, an SSE body for `/events`.
+// A mocked transport: JSON for BE calls, an SSE body for `/streams/*`.
 // ---------------------------------------------------------------------------
 
 /** Encode SSE frames into a `ReadableStream` body. */
@@ -25,14 +25,13 @@ function jsonResponse(body: unknown, status = 200): Response {
 	})
 }
 
-/** A fetch mock: `/events` streams `frames`, `/history` returns `historyJson`, else `json`. */
-function mockFetch(frames: string[] = [], json: unknown = { ok: true }, historyJson?: unknown) {
+/** A fetch mock: `/streams` streams `frames`, else `json`. */
+function mockFetch(frames: string[] = [], json: unknown = { ok: true }) {
 	const calls: { url: string; init?: RequestInit }[] = []
 	const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
 		const url = String(input)
 		calls.push({ url, init })
-		if (url.includes('/events')) return new Response(sseBody(frames), { status: 200 })
-		if (url.includes('/history')) return jsonResponse(historyJson ?? { events: [] })
+		if (url.includes('/streams/')) return new Response(sseBody(frames), { status: 200 })
 		return jsonResponse(json)
 	})
 	return { fn: fn as unknown as FetchFn, calls }
@@ -47,10 +46,16 @@ async function waitFor(pred: () => boolean, ms = 500): Promise<void> {
 	}
 }
 
+const CRED: StreamCredential = {
+	generation_id: 'gen_1',
+	stream_token: 'tok-1',
+	stream_url: 'http://localhost:8192/streams/gen_1',
+}
+
 const DELTA = (text: string, seq: number) =>
 	`event: answer_delta\ndata: ${JSON.stringify({
 		type: 'answer_delta',
-		stream_id: 's1',
+		stream_id: 'gen_1',
 		stream_seq: seq,
 		text,
 	})}\n\n`
@@ -66,8 +71,8 @@ const ANSWER = (text: string, seq: number) =>
 const DONE = (seq: number) =>
 	`event: done\ndata: ${JSON.stringify({ seq, type: 'done', payload: { reason: 'stop' }, ts: 't' })}\n\n`
 
-function session(fn: FetchFn, autoStream = true, eventLogLimit?: number) {
-	return new ButlerSession({
+function stream(fn: FetchFn, autoStream = true, eventLogLimit?: number) {
+	return new GenerationStream({
 		client: new AlfredClient({ fetchFn: fn }),
 		autoStream,
 		eventLogLimit,
@@ -76,37 +81,25 @@ function session(fn: FetchFn, autoStream = true, eventLogLimit?: number) {
 
 // ---------------------------------------------------------------------------
 
-describe('create', () => {
-	it('posts the session, sets id/status and attaches the stream', async () => {
-		const { fn, calls } = mockFetch([ANSWER('hi', 1), DONE(2)], { session_id: 'sess-1' })
-		const s = session(fn)
+describe('attach / reduce', () => {
+	it('attaches a credential, streams the answer and flips status on done', async () => {
+		const { fn, calls } = mockFetch([ANSWER('hi', 1), DONE(2)])
+		const s = stream(fn)
 
-		const id = await s.create({ agent: { model: 'anthropic/claude-sonnet-4' } })
+		await s.attach(CRED)
 		await s.attached
 
-		expect(id).toBe('sess-1')
-		expect(s.id).toBe('sess-1')
+		expect(s.id).toBe('gen_1')
 		expect(s.status).toBe('done')
 		expect(s.text).toBe('hi')
-		expect(calls[0].url).toBe('http://localhost:8192/sessions')
-		expect(calls[1].url).toContain('/sessions/sess-1/events?after_seq=0')
+		expect(calls[0].url).toBe('http://localhost:8192/streams/gen_1?after_seq=0')
+		expect(new Headers(calls[0].init?.headers).get('authorization')).toBe('Bearer tok-1')
 	})
 
-	it('does not attach when autoStream is false', async () => {
-		const { fn, calls } = mockFetch([], { session_id: 'sess-2' })
-		const s = session(fn, false)
-		await s.create({ agent: { model: 'm' } })
-		expect(s.id).toBe('sess-2')
-		expect(s.status).toBe('running')
-		expect(calls).toHaveLength(1)
-	})
-})
-
-describe('attach / reduce', () => {
-	it('appends deltas, replaces with the durable answer, flips status on done', async () => {
+	it('appends deltas, replaces with the durable answer', async () => {
 		const { fn } = mockFetch([DELTA('Hel', 1), DELTA('lo', 2), ANSWER('Hello world', 3), DONE(4)])
-		const s = session(fn)
-		await s.attach('sess-1')
+		const s = stream(fn)
+		await s.attach(CRED)
 		await s.attached
 
 		expect(s.text).toBe('Hello world')
@@ -117,10 +110,10 @@ describe('attach / reduce', () => {
 
 	it('reconnects from the durable cursor, not from zero', async () => {
 		const { fn, calls } = mockFetch([ANSWER('again', 9), DONE(10)])
-		const s = session(fn)
-		await s.attach('sess-1')
+		const s = stream(fn)
+		await s.attach(CRED)
 		await s.attached
-		await s.attach('sess-1')
+		await s.attach(CRED)
 		await s.attached
 
 		// lastSeq is 10 after the first pass (the `done` event), so replay resumes there.
@@ -128,150 +121,60 @@ describe('attach / reduce', () => {
 	})
 
 	it('surfaces a stream failure as status error + message', async () => {
-		const fn = vi.fn(async () => jsonResponse({ detail: 'session not found: zz' }, 404))
-		const s = session(fn as unknown as FetchFn)
-		await s.attach('zz')
+		const fn = vi.fn(async () => jsonResponse({ detail: 'generation ended' }, 410))
+		const s = stream(fn as unknown as FetchFn)
+		await s.attach(CRED)
 		await s.attached
 
 		expect(s.status).toBe('error')
-		expect(s.error).toBe('session not found: zz')
+		expect(s.error).toBe('generation ended')
 	})
 
 	it('rejects attach without an id', async () => {
 		const { fn } = mockFetch()
-		const s = session(fn)
+		const s = stream(fn)
 		await expect(s.attach(null)).rejects.toBeInstanceOf(AlfredError)
 	})
 })
 
-describe('send', () => {
-	it('routes queue / steer / redirect to distinct endpoints', async () => {
-		const { fn, calls } = mockFetch([], { session_id: 'sess-1' })
-		const s = session(fn, false)
-		await s.create({ agent: { model: 'm' } })
+describe('refreshStream', () => {
+	/** A fetch that 401s until the token matches `good`, then succeeds. */
+	function authFetch(good: string) {
+		const calls: { url: string; auth: string | null }[] = []
+		const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input)
+			const auth = new Headers(init?.headers).get('authorization')
+			calls.push({ url, auth })
+			if (auth !== `Bearer ${good}`) return jsonResponse({ detail: 'expired' }, 401)
+			if (url.includes('/streams/')) return new Response(sseBody([ANSWER('hi', 1), DONE(2)]))
+			return jsonResponse({ ok: true })
+		})
+		return { fn: fn as unknown as FetchFn, calls }
+	}
 
-		await s.send('a', 'queue')
-		await s.send('b', 'steer')
-		await s.send('c', 'redirect')
-
-		expect(calls.map((c) => c.url)).toEqual([
-			'http://localhost:8192/sessions',
-			'http://localhost:8192/sessions/sess-1/queue',
-			'http://localhost:8192/sessions/sess-1/steer',
-			'http://localhost:8192/sessions/sess-1/redirect',
-		])
-		expect(JSON.parse(String(calls[1].init?.body))).toEqual({ prompt: 'a' })
-	})
-
-	it('throws before fetching when no session is attached', async () => {
-		const { fn, calls } = mockFetch()
-		const s = session(fn)
-		await expect(s.send('x')).rejects.toMatchObject({ code: 'validation' })
-		expect(calls).toHaveLength(0)
-	})
-})
-
-describe('stop / resume / history', () => {
-	it('stop pauses, resume re-attaches when autoStream is on', async () => {
-		const { fn, calls } = mockFetch([DONE(1)], { session_id: 'sess-1' })
-		const s = session(fn)
-		await s.create({ agent: { model: 'm' } })
+	it('refreshes the stream capability on 401/410 and retries once', async () => {
+		const { fn, calls } = authFetch('fresh')
+		const refresh = vi.fn(async () => ({ ...CRED, stream_token: 'fresh' }))
+		const s = new GenerationStream({
+			client: new AlfredClient({ fetchFn: fn }),
+			refreshStream: refresh,
+		})
+		// attach installs CRED's token (tok-1); the mock 401s until 'fresh'.
+		await s.attach(CRED)
 		await s.attached
 
-		await s.stop()
-		expect(s.status).toBe('paused')
-		await s.resume()
-		await s.attached
+		expect(refresh).toHaveBeenCalledTimes(1)
+		expect(calls.map((c) => c.auth)).toEqual(['Bearer tok-1', 'Bearer fresh'])
 		expect(s.status).toBe('done')
-		expect(calls.map((c) => c.url)).toContain('http://localhost:8192/sessions/sess-1/stop')
-		expect(calls.map((c) => c.url)).toContain('http://localhost:8192/sessions/sess-1/resume')
-	})
-
-	it('resume does not attach when autoStream is off', async () => {
-		const { fn, calls } = mockFetch([], { session_id: 'sess-1' })
-		const s = session(fn, false)
-		await s.create({ agent: { model: 'm' } })
-		await s.stop()
-		await s.resume()
-		expect(s.status).toBe('running')
-		expect(calls.some((c) => c.url.includes('/events'))).toBe(false)
-	})
-
-	it('loadHistory stores durable items', async () => {
-		const history = {
-			events: [
-				{ kind: 'message', seq: 1, role: 'user', content: 'Hello' },
-				{ kind: 'event', seq: 1, type: 'answer', payload: { text: 'Hi' }, ts: 't' },
-			],
-		}
-		const { fn, calls } = mockFetch([], { session_id: 'sess-1' }, history)
-		const s = session(fn, false)
-		await s.create({ agent: { model: 'm' } })
-		await s.loadHistory()
-
-		expect(s.history).toHaveLength(2)
-		expect(calls[1].url).toContain('/sessions/sess-1/history?after_seq=0')
-	})
-
-	it('loadHistory advances the cursor so attach does not replay it', async () => {
-		const history = {
-			events: [
-				{ kind: 'message', seq: 1, role: 'user', content: 'Hello' },
-				{ kind: 'event', seq: 7, type: 'answer', payload: { text: 'Hi' }, ts: 't' },
-			],
-		}
-		const { fn, calls } = mockFetch([DONE(8)], { session_id: 'sess-1' }, history)
-		const s = session(fn, false)
-		await s.create({ agent: { model: 'm' } })
-		await s.loadHistory()
-		expect(s.lastSeq).toBe(7)
-
-		await s.attach('sess-1')
-		await s.attached
-		const eventsCall = calls.find((c) => c.url.includes('/events'))
-		expect(eventsCall?.url).toContain('after_seq=7')
-	})
-
-	it('loadHistory never moves the cursor backwards', async () => {
-		const history = { events: [{ kind: 'event', seq: 2, type: 'answer', payload: {}, ts: 't' }] }
-		const { fn } = mockFetch([ANSWER('x', 9), DONE(10)], { session_id: 'sess-1' }, history)
-		const s = session(fn)
-		await s.create({ agent: { model: 'm' } })
-		await s.attached
-		expect(s.lastSeq).toBe(10)
-
-		await s.loadHistory()
-		expect(s.lastSeq).toBe(10)
-	})
-
-	it('loadHistory ignores message seqs (independent space from events)', async () => {
-		// messages.seq and events.seq are independent (§6): a message seq of 50
-		// must not push the event cursor past the durable event seq of 3.
-		const history = {
-			events: [
-				{ kind: 'message', seq: 50, role: 'user', content: 'Hello' },
-				{ kind: 'event', seq: 3, type: 'answer', payload: { text: 'Hi' }, ts: 't' },
-			],
-		}
-		const { fn, calls } = mockFetch([DONE(4)], { session_id: 'sess-1' }, history)
-		const s = session(fn, false)
-		await s.create({ agent: { model: 'm' } })
-		await s.loadHistory()
-		expect(s.lastSeq).toBe(3)
-
-		await s.attach('sess-1')
-		await s.attached
-		const eventsCall = calls.find((c) => c.url.includes('/events'))
-		expect(eventsCall?.url).toContain('after_seq=3')
 	})
 })
 
 describe('event log bound', () => {
 	it('keeps durable events and trims the oldest deltas', async () => {
 		const frames = [DELTA('a', 1), DELTA('b', 2), DELTA('c', 3), ANSWER('abc', 4), DONE(5)]
-		const { fn } = mockFetch(frames, { session_id: 'sess-1' })
-		const s = session(fn, true, 3)
-		await s.create({ agent: { model: 'm' } })
+		const { fn } = mockFetch(frames)
+		const s = stream(fn, true, 3)
+		await s.attach(CRED)
 		await s.attached
 
 		// 5 events arrived, cap is 3 → the 2 oldest deltas were dropped.
@@ -283,9 +186,9 @@ describe('event log bound', () => {
 	})
 
 	it('eventLogLimit 0 disables the log but keeps the reducer working', async () => {
-		const { fn } = mockFetch([DELTA('a', 1), ANSWER('a', 2), DONE(3)], { session_id: 'sess-1' })
-		const s = session(fn, true, 0)
-		await s.create({ agent: { model: 'm' } })
+		const { fn } = mockFetch([DELTA('a', 1), ANSWER('a', 2), DONE(3)])
+		const s = stream(fn, true, 0)
+		await s.attach(CRED)
 		await s.attached
 
 		expect(s.events).toEqual([])
@@ -295,10 +198,10 @@ describe('event log bound', () => {
 })
 
 describe('isStreaming', () => {
-	it('tracks the connection, not the agent status', async () => {
+	it('tracks the connection', async () => {
 		// A stream that stays open until aborted.
 		const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-			if (String(input).includes('/events')) {
+			if (String(input).includes('/streams/')) {
 				const body = new ReadableStream<Uint8Array>({
 					start(controller) {
 						init?.signal?.addEventListener('abort', () => controller.close())
@@ -306,17 +209,13 @@ describe('isStreaming', () => {
 				})
 				return new Response(body, { status: 200 })
 			}
-			return jsonResponse({ session_id: 'sess-1' })
+			return jsonResponse({ ok: true })
 		}) as unknown as FetchFn
-		const s = session(fn)
+		const s = stream(fn)
 		expect(s.isStreaming).toBe(false)
 
-		await s.create({ agent: { model: 'm' } })
-		expect(s.isStreaming).toBe(true)
-
-		// stop() pauses the agent but the SSE connection stays open.
-		await s.stop()
-		expect(s.status).toBe('paused')
+		void s.attach(CRED)
+		await waitFor(() => s.isStreaming)
 		expect(s.isStreaming).toBe(true)
 
 		s.dispose()
@@ -329,7 +228,7 @@ describe('dispose / reset', () => {
 		// A stream that never closes: the loop stays attached until aborted.
 		const encoder = new TextEncoder()
 		const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-			if (String(input).includes('/events')) {
+			if (String(input).includes('/streams/')) {
 				const body = new ReadableStream<Uint8Array>({
 					start(controller) {
 						controller.enqueue(encoder.encode(DELTA('a', 1)))
@@ -338,10 +237,10 @@ describe('dispose / reset', () => {
 				})
 				return new Response(body, { status: 200 })
 			}
-			return jsonResponse({ session_id: 'sess-1' })
+			return jsonResponse({ ok: true })
 		}) as unknown as FetchFn
-		const s = session(fn)
-		await s.create({ agent: { model: 'm' } })
+		const s = stream(fn)
+		void s.attach(CRED)
 		await waitFor(() => s.text === 'a')
 		expect(s.text).toBe('a')
 
@@ -352,9 +251,9 @@ describe('dispose / reset', () => {
 	})
 
 	it('reset clears every field', async () => {
-		const { fn } = mockFetch([ANSWER('hi', 1), DONE(2)], { session_id: 'sess-1' })
-		const s = session(fn)
-		await s.create({ agent: { model: 'm' } })
+		const { fn } = mockFetch([ANSWER('hi', 1), DONE(2)])
+		const s = stream(fn)
+		await s.attach(CRED)
 		await s.attached
 
 		s.reset()
@@ -362,132 +261,6 @@ describe('dispose / reset', () => {
 		expect(s.status).toBe('idle')
 		expect(s.text).toBe('')
 		expect(s.events).toEqual([])
-		expect(s.history).toEqual([])
 		expect(s.error).toBeNull()
-	})
-})
-
-describe('token refresh', () => {
-	/** A fetch that 401s until the token matches `good`, then succeeds. */
-	function authFetch(good: string) {
-		const calls: { url: string; auth: string | null }[] = []
-		const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-			const url = String(input)
-			const auth = new Headers(init?.headers).get('authorization')
-			calls.push({ url, auth })
-			if (auth !== `Bearer ${good}`) return jsonResponse({ detail: 'token expired' }, 401)
-			if (url.includes('/events')) return new Response(sseBody([ANSWER('hi', 1), DONE(2)]))
-			if (url.includes('/history')) return jsonResponse({ events: [] })
-			return jsonResponse({ ok: true })
-		})
-		return { fn: fn as unknown as FetchFn, calls }
-	}
-
-	it('re-mints on 401 and retries the request once', async () => {
-		const { fn, calls } = authFetch('fresh')
-		const refresh = vi.fn(async () => 'fresh')
-		const s = new ButlerSession({
-			client: new AlfredClient({ fetchFn: fn, authToken: 'stale' }),
-			autoStream: false,
-			refreshToken: refresh,
-		})
-		s.id = 's1'
-		await s.send('hello')
-
-		expect(refresh).toHaveBeenCalledTimes(1)
-		expect(calls.map((c) => c.auth)).toEqual(['Bearer stale', 'Bearer fresh'])
-	})
-
-	it('installs the refreshed token on the client for later requests', async () => {
-		const { fn, calls } = authFetch('fresh')
-		const s = new ButlerSession({
-			client: new AlfredClient({ fetchFn: fn, authToken: 'stale' }),
-			autoStream: false,
-			refreshToken: async () => 'fresh',
-		})
-		s.id = 's1'
-		await s.send('one')
-		await s.send('two')
-
-		// Second send starts with the refreshed token — no second 401.
-		expect(calls.map((c) => c.auth)).toEqual(['Bearer stale', 'Bearer fresh', 'Bearer fresh'])
-	})
-
-	it('refreshes the SSE stream too', async () => {
-		const { fn, calls } = authFetch('fresh')
-		const refresh = vi.fn(async () => 'fresh')
-		const s = new ButlerSession({
-			client: new AlfredClient({ fetchFn: fn, authToken: 'stale' }),
-			refreshToken: refresh,
-		})
-		await s.attach('s1')
-		await s.attached
-
-		expect(refresh).toHaveBeenCalledTimes(1)
-		expect(s.text).toBe('hi')
-		expect(s.status).toBe('done')
-		expect(calls[0].auth).toBe('Bearer stale')
-		expect(calls[1].auth).toBe('Bearer fresh')
-	})
-
-	it('propagates the 401 when no refreshToken is configured', async () => {
-		const { fn } = authFetch('fresh')
-		const s = new ButlerSession({
-			client: new AlfredClient({ fetchFn: fn, authToken: 'stale' }),
-			autoStream: false,
-		})
-		s.id = 's1'
-		await expect(s.send('hello')).rejects.toMatchObject({ status: 401 })
-	})
-
-	it('does not retry a second time when the refreshed token is also rejected', async () => {
-		const { fn, calls } = authFetch('never')
-		const refresh = vi.fn(async () => 'still-bad')
-		const s = new ButlerSession({
-			client: new AlfredClient({ fetchFn: fn, authToken: 'stale' }),
-			autoStream: false,
-			refreshToken: refresh,
-		})
-		s.id = 's1'
-		await expect(s.send('hello')).rejects.toMatchObject({ status: 401 })
-		expect(refresh).toHaveBeenCalledTimes(1)
-		expect(calls).toHaveLength(2)
-	})
-
-	it('does not refresh on a non-401 failure', async () => {
-		const { fn } = mockFetch([], { detail: 'boom' })
-		const refresh = vi.fn(async () => 'fresh')
-		const s = new ButlerSession({
-			client: new AlfredClient({ fetchFn: fn, authToken: 'tok' }),
-			autoStream: false,
-			refreshToken: refresh,
-		})
-		s.id = 's1'
-		await s.send('hello')
-		expect(refresh).not.toHaveBeenCalled()
-	})
-
-	it('installs a refreshed credential (token + URL) on the client', async () => {
-		const calls: { url: string; auth: string | null }[] = []
-		const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-			const url = String(input)
-			const auth = new Headers(init?.headers).get('authorization')
-			calls.push({ url, auth })
-			if (url === 'http://old:8192/sessions/s1/queue' && auth === 'Bearer stale') {
-				return jsonResponse({ detail: 'token expired' }, 401)
-			}
-			return jsonResponse({ ok: true })
-		}) as unknown as FetchFn
-		const s = new ButlerSession({
-			client: new AlfredClient({ fetchFn: fn, baseUrl: 'http://old:8192', authToken: 'stale' }),
-			autoStream: false,
-			refreshToken: async () => ({ token: 'fresh', base_url: 'https://alfred.example:8192' }),
-		})
-		s.id = 's1'
-		await s.send('hello')
-
-		expect(calls).toHaveLength(2)
-		expect(calls[1].url).toBe('https://alfred.example:8192/sessions/s1/queue')
-		expect(calls[1].auth).toBe('Bearer fresh')
 	})
 })
