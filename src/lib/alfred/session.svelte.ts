@@ -46,8 +46,8 @@ import type { LiveEvent, StreamCredential } from './types.js'
  */
 export const DEFAULT_EVENT_LOG_LIMIT = 500
 
-/** Stream lifecycle. */
-export type GenerationStatus = 'idle' | 'streaming' | 'paused' | 'done' | 'error'
+/** Stream lifecycle. `waiting` = a human tool is pending an answer (§9). */
+export type GenerationStatus = 'idle' | 'streaming' | 'waiting' | 'paused' | 'done' | 'error'
 
 export interface GenerationStreamOptions {
 	/** The transport. Construct with `baseUrl: env.ALFRED_PUBLIC_URL` in `emw`. */
@@ -110,6 +110,10 @@ export class GenerationStream {
 	readonly thought = $derived(this.stream.thought)
 	/** Highest durable `seq` seen — the reconnect cursor. */
 	readonly lastSeq = $derived(this.stream.lastSeq)
+	/** Pending human asks (§9), cleared as answers arrive. */
+	readonly pendingHuman = $derived(this.stream.pendingHuman)
+	/** Whether a human tool is waiting for an answer. */
+	readonly isWaitingHuman = $derived(this.stream.status === 'waiting')
 	/**
 	 * Whether the SSE loop is currently attached. Derived from the abort
 	 * controller, not from `status`.
@@ -201,6 +205,7 @@ export class GenerationStream {
 		this.#pushEvent(evt)
 		if (this.stream.status === 'done') this.status = 'done'
 		else if (this.stream.status === 'error') this.status = 'error'
+		else if (this.stream.status === 'waiting') this.status = 'waiting'
 		else this.status = 'streaming'
 	}
 

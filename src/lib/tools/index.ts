@@ -9,8 +9,7 @@
  *
  * `emw` advertises builtins with descriptors from `emw-lib/alfred`
  * (`builtinToolset`, `BUILTIN_TOOL_NAMES`) — no `execute`, no keys, no
- * webhook round-trip. The `serps/*` adapters and `scrappers/bodacc` client
- * stay (pure parsers/URL builders, still tested); only the `AgentTool`
- * wrappers and the registry are gone.
+ * webhook round-trip. Scraping executes in Butler (`builtins/serps.py`);
+ * no TS adapter remains in `emw-lib`.
  */
 export {}

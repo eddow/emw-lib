@@ -147,4 +147,72 @@ describe('Chat', () => {
 			globalThis.fetch = origFetch
 		}
 	})
+
+	it('renders durable history when no generation is live (reload case)', async () => {
+		const screen = await render(ChatTestHost, {
+			credential: null,
+			history: [
+				{ kind: 'message', seq: 1, role: 'user', content: 'first question' },
+				{ kind: 'message', seq: 2, role: 'assistant', content: 'first answer' },
+				{ kind: 'message', seq: 3, role: 'user', content: 'second question' },
+				{ kind: 'message', seq: 4, role: 'assistant', content: 'second answer' },
+			],
+		})
+		const messages = screen.getByTestId('alfred-chat-messages')
+		await expect.element(messages.getByTestId('alfred-chat-message').first()).toBeVisible()
+		await expect.element(messages).toHaveTextContent('first question')
+		await expect.element(messages).toHaveTextContent('second answer')
+		// No stream attached, but the composer is usable (first send creates one).
+		await expect.element(screen.getByTestId('alfred-chat-send')).toBeVisible()
+	})
+
+	it('renders an ask_human card and posts the answer to Alfred directly', async () => {
+		const calls: { url: string; init?: RequestInit }[] = []
+		const encoder = new TextEncoder()
+		const origFetch = globalThis.fetch
+		const question = `event: human_question\ndata: ${JSON.stringify({
+			seq: 3,
+			type: 'human_question',
+			payload: {
+				tool_call_id: 'call_1',
+				name: 'ask_human',
+				questions: [{ id: 'q', text: 'Pick?', options: ['a', 'b'] }],
+				timeout_s: 0,
+				on_timeout: 'autopick',
+			},
+			ts: 't',
+		})}\n\n`
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input)
+			calls.push({ url, init })
+			if (url.includes('/answer/')) return Response.json({ ok: true, duplicate: false })
+			const body = new ReadableStream({
+				start(controller) {
+					controller.enqueue(encoder.encode(question))
+					// Hold the stream open: the card must stay interactive.
+					// (Never close — the component disposes it on unmount.)
+				},
+			})
+			return new Response(body, { status: 200 })
+		}) as unknown as typeof fetch
+		try {
+			const screen = await render(ChatTestHost, { credential: CRED })
+			await expect.element(screen.getByTestId('alfred-human-card')).toBeVisible()
+			// First option is the preferred default (marked selected).
+			const options = screen.getByTestId('alfred-human-option')
+			await expect.element(options.first()).toHaveAttribute('data-selected', 'true')
+			await screen.getByTestId('alfred-human-submit').click()
+			await vi.waitFor(() => {
+				expect(calls.some((c) => c.url.includes('/answer/call_1'))).toBe(true)
+			})
+			const post = calls.find((c) => c.url.includes('/answer/call_1'))!
+			expect(post.url).toBe('http://localhost:8192/streams/gen_1/answer/call_1')
+			expect(new Headers(post.init?.headers).get('authorization')).toBe('Bearer tok-1')
+			expect(new Headers(post.init?.headers).get('x-alfred-secret')).toBeNull()
+			const body = JSON.parse(post.init?.body as string)
+			expect(body.answers).toEqual([{ id: 'q', choice: 'a', autopicked: false, timed_out: false }])
+		} finally {
+			globalThis.fetch = origFetch
+		}
+	})
 })

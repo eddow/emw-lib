@@ -9,8 +9,6 @@ no SvelteKit `$lib/server`, no env reads — the host app passes config in.
 | Path | What |
 |---|---|
 | `src/lib/alfred/` | Alfred client: transport + streaming + chat (see `docs/alfred.md`) |
-| `src/lib/serps/` | Search-engine result adapters (`FetchFn`-injected scrapers) |
-| `src/lib/scrappers/bodacc/` | BODACC company-notice scraper client |
 
 ## Conventions
 

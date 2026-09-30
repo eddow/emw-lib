@@ -186,6 +186,67 @@ describe('history / streamPoll', () => {
 	})
 })
 
+describe('answerHuman / humanPending (FE, token)', () => {
+	it('posts the answer with the bearer token and no secret header', async () => {
+		const { fn, calls } = mockFetch(() =>
+			jsonResponse({ ok: true, duplicate: false, status: 'answered', value: [{ id: 'q' }] })
+		)
+		const client = new AlfredClient({
+			baseUrl: 'http://alfred:8192',
+			streamToken: 'tok-stream',
+			fetchFn: fn,
+		})
+		const out = await client.answerHuman('gen_1', 'call_1', {
+			answers: [{ id: 'q', choice: 'a', autopicked: false, timed_out: false }],
+		})
+		expect(out.duplicate).toBe(false)
+		expect(calls[0].url).toBe('http://alfred:8192/streams/gen_1/answer/call_1')
+		const headers = new Headers(calls[0].init?.headers)
+		expect(headers.get('authorization')).toBe('Bearer tok-stream')
+		expect(headers.get('x-alfred-secret')).toBeNull()
+		const body = JSON.parse(calls[0].init?.body as string)
+		expect(body.answers).toHaveLength(1)
+	})
+
+	it('wraps a bare answers array and a bare value object', async () => {
+		const { fn, calls } = mockFetch(() =>
+			jsonResponse({ ok: true, duplicate: false, status: 'answered', value: 1 })
+		)
+		const client = new AlfredClient({ fetchFn: fn })
+		await client.answerHuman('gen_1', 'call_1', [
+			{ id: 'q', choice: 'a', autopicked: false, timed_out: false },
+		])
+		expect(JSON.parse(calls[0].init?.body as string)).toHaveProperty('answers')
+		await client.answerHuman('gen_1', 'call_1', { date: '2026-10-01' })
+		expect(JSON.parse(calls[1].init?.body as string)).toHaveProperty('value')
+	})
+
+	it('throws AlfredError on 404/422 without swallowing the detail', async () => {
+		const { fn } = mockFetch(() => jsonResponse({ detail: 'unknown human wait' }, 404))
+		const client = new AlfredClient({ fetchFn: fn })
+		await expect(client.answerHuman('gen_1', 'nope', { value: 1 })).rejects.toMatchObject({
+			status: 404,
+		})
+	})
+
+	it('fetches pending waits with the bearer token', async () => {
+		const { fn, calls } = mockFetch(() => jsonResponse({ waiting: [] }))
+		const client = new AlfredClient({ streamToken: 'tok-stream', fetchFn: fn })
+		const out = await client.humanPending('gen_1')
+		expect(out.waiting).toEqual([])
+		expect(calls[0].url).toBe('http://localhost:8192/streams/gen_1/human')
+		expect(new Headers(calls[0].init?.headers).get('authorization')).toBe('Bearer tok-stream')
+	})
+
+	it('validates ids before any fetch', async () => {
+		const { fn } = mockFetch(() => jsonResponse({}))
+		const client = new AlfredClient({ fetchFn: fn })
+		await expect(client.answerHuman('', 'call_1', { value: 1 })).rejects.toThrow()
+		await expect(client.answerHuman('gen_1', '', { value: 1 })).rejects.toThrow()
+		expect(fn).not.toHaveBeenCalled()
+	})
+})
+
 describe('streamEvents (SSE)', () => {
 	it('parses multi-chunk SSE, skips comments and [DONE]', async () => {
 		const { fn } = mockFetch(
@@ -235,6 +296,51 @@ describe('streamEvents (SSE)', () => {
 			for await (const _ of client.streamEvents('gen_x')) void _
 		}
 		await expect(iterate()).rejects.toMatchObject({ code: 'http', status: 410 })
+	})
+
+	it('formats a FastAPI 422 detail list instead of [object Object]', async () => {
+		const { fn } = mockFetch(() =>
+			jsonResponse(
+				{
+					detail: [
+						{
+							type: 'literal_error',
+							loc: ['body', 'toolset', 'tools', 0, 'execution', 'type'],
+							msg: "Input should be 'http', 'callback' or 'inline_deny'",
+							input: 'builtin',
+						},
+						{
+							type: 'literal_error',
+							loc: ['body', 'toolset', 'tools', 1, 'execution', 'type'],
+							msg: "Input should be 'http', 'callback' or 'inline_deny'",
+							input: 'builtin',
+						},
+					],
+				},
+				422
+			)
+		)
+		const client = new AlfredClient({ fetchFn: fn })
+		const err = await client.createSession({ agent: { model: 'm' } }).catch((e) => e)
+		expect(err).toBeInstanceOf(AlfredError)
+		expect(err.status).toBe(422)
+		expect(err.message).not.toContain('[object Object]')
+		expect(err.message).toBe(
+			'body.toolset.tools.0.execution.type: ' +
+				"Input should be 'http', 'callback' or 'inline_deny': got \"builtin\"; " +
+				'body.toolset.tools.1.execution.type: ' +
+				"Input should be 'http', 'callback' or 'inline_deny': got \"builtin\""
+		)
+	})
+
+	it('renders a dict detail via its error field (409 conflict)', async () => {
+		const { fn } = mockFetch(() =>
+			jsonResponse({ detail: { error: 'generation already running' } }, 409)
+		)
+		const client = new AlfredClient({ fetchFn: fn })
+		const err = await client.prompt('s1', { prompt: 'hi' }).catch((e) => e)
+		expect(err).toBeInstanceOf(AlfredError)
+		expect(err.message).toBe('generation already running')
 	})
 
 	it('stops cleanly when the caller aborts', async () => {
@@ -418,6 +524,56 @@ describe('control plane', () => {
 			'GET http://localhost:8192/tools',
 		])
 		expect(new Headers(calls[0].init?.headers).get('x-alfred-secret')).toBe('s3cret')
+	})
+
+	it('callTool POSTs name/arguments to /tools/call and returns {result}', async () => {
+		const { fn, calls } = mockFetch(() => jsonResponse({ result: 42 }))
+		const client = new AlfredClient({ fetchFn: fn, webhookSecret: 's3cret' })
+		const out = await client.callTool({ name: 'calc', arguments: { expr: '6*7' } })
+		expect(out).toEqual({ result: 42 })
+		expect(calls.map((c) => `${c.init?.method} ${c.url}`)).toEqual([
+			'POST http://localhost:8192/tools/call',
+		])
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+			name: 'calc',
+			arguments: { expr: '6*7' },
+		})
+		expect(new Headers(calls[0].init?.headers).get('x-alfred-secret')).toBe('s3cret')
+	})
+
+	it('callTool returns {error} instead of throwing on tool-level failure', async () => {
+		const { fn } = mockFetch(() => jsonResponse({ error: 'ValueError: bad expr' }))
+		const client = new AlfredClient({ fetchFn: fn })
+		const out = await client.callTool({ name: 'calc', arguments: {} })
+		expect(out).toEqual({ error: 'ValueError: bad expr' })
+	})
+
+	it('callTool forwards session_id/execution/webhook_url when given', async () => {
+		const { fn, calls } = mockFetch(() => jsonResponse({ result: { name: 'n' } }))
+		const client = new AlfredClient({ fetchFn: fn })
+		await client.callTool({
+			name: 'artifact',
+			arguments: { op: 'list' },
+			session_id: 's1',
+			execution: { type: 'builtin' },
+		})
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+			name: 'artifact',
+			arguments: { op: 'list' },
+			session_id: 's1',
+			execution: { type: 'builtin' },
+		})
+	})
+
+	it('callTool throws AlfredError on envelope errors (404/422), validates name first', async () => {
+		const { fn } = mockFetch(
+			() => new Response('{"detail":"unknown builtin tool: nope"}', { status: 404 })
+		)
+		const client = new AlfredClient({ fetchFn: fn })
+		const err = await client.callTool({ name: 'nope' }).catch((e) => e)
+		expect(err).toBeInstanceOf(AlfredError)
+		expect(err.status).toBe(404)
+		await expect(client.callTool({ name: '' })).rejects.toBeInstanceOf(AlfredError)
 	})
 })
 

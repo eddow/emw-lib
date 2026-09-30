@@ -14,21 +14,30 @@
  *   cursor comes from durable `seq` alone — deltas are dropped on restart).
  */
 
-import type { DeltaEvent, DurableEvent, LiveEvent } from './types.js'
+import type {
+	DeltaEvent,
+	DurableEvent,
+	HumanAnswerPayload,
+	HumanPending,
+	HumanQuestionPayload,
+	LiveEvent,
+} from './types.js'
 
 export interface StreamState {
 	/** Current answer draft (deltas applied, replaced by the final `answer`). */
 	text: string
 	/** Current reasoning draft (deltas applied, replaced by the final `thought`). */
 	thought: string
-	status: 'streaming' | 'done' | 'error'
+	status: 'streaming' | 'waiting' | 'done' | 'error'
 	/** Highest durable `seq` seen — the reconnect cursor. */
 	lastSeq: number
+	/** Pending human asks (keyed by `tool_call_id`), cleared on answer. */
+	pendingHuman: HumanPending[]
 }
 
 /** Fresh state: streaming, empty drafts, cursor at 0. */
 export function createStreamState(): StreamState {
-	return { text: '', thought: '', status: 'streaming', lastSeq: 0 }
+	return { text: '', thought: '', status: 'streaming', lastSeq: 0, pendingHuman: [] }
 }
 
 /** Narrow a live event to a delta (deltas carry `stream_id`, durable events do not). */
@@ -50,6 +59,10 @@ function payloadText(evt: DurableEvent): string {
 /**
  * Apply one live event, returning a NEW state (never mutates the input).
  * Unknown event types are passed through unchanged.
+ *
+ * `human_question` registers a pending ask (status → `waiting`);
+ * `human_answer` clears it (status back to `streaming` unless other asks
+ * remain pending). Only durable events advance `lastSeq`.
  */
 export function applyLiveEvent(state: StreamState, evt: LiveEvent): StreamState {
 	if (isDeltaEvent(evt)) {
@@ -71,6 +84,40 @@ export function applyLiveEvent(state: StreamState, evt: LiveEvent): StreamState 
 			return { ...next, text: payloadText(durable) }
 		case 'thought':
 			return { ...next, thought: payloadText(durable) }
+		case 'human_question': {
+			const p = (durable.payload ?? {}) as Partial<HumanQuestionPayload>
+			const toolCallId =
+				typeof p.tool_call_id === 'string' ? p.tool_call_id : `q-${durable.seq ?? 0}`
+			const pending: HumanPending = {
+				generation_id: '',
+				tool_call_id: toolCallId,
+				session_id: '',
+				tool_name: typeof p.name === 'string' ? p.name : '',
+				payload: (p.arguments ?? {}) as Record<string, unknown>,
+				questions: p.questions,
+				deadline: 0,
+				on_timeout: p.on_timeout ?? 'autopick',
+				status: 'waiting',
+				created_at: '',
+			}
+			if (p.questions) {
+				pending.payload = { questions: p.questions }
+			}
+			const rest = next.pendingHuman.filter((w) => w.tool_call_id !== toolCallId)
+			return { ...next, status: 'waiting', pendingHuman: [...rest, pending] }
+		}
+		case 'human_answer': {
+			const p = (durable.payload ?? {}) as Partial<HumanAnswerPayload>
+			const toolCallId = typeof p.tool_call_id === 'string' ? p.tool_call_id : ''
+			const pendingHuman = toolCallId
+				? next.pendingHuman.filter((w) => w.tool_call_id !== toolCallId)
+				: next.pendingHuman
+			return {
+				...next,
+				status: pendingHuman.length ? 'waiting' : 'streaming',
+				pendingHuman,
+			}
+		}
 		case 'done':
 			return { ...next, status: 'done' }
 		case 'error':

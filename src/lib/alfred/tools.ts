@@ -16,7 +16,7 @@
  * app injects `resolveScope` (its own lookup).
  */
 
-import type { ToolDef, ToolsetConfig, ToolsetPolicy } from './types.js'
+import type { HumanToolDef, ToolDef, ToolsetConfig, ToolsetPolicy } from './types.js'
 
 /** Default per-tool timeout, matching the `timeout_ms` in `butler/alfred.md` §2. */
 export const DEFAULT_TOOL_TIMEOUT_MS = 15_000
@@ -146,6 +146,82 @@ export function toBuiltinToolset(tools: BuiltinToolDef[]): ToolDef[] {
 	}))
 }
 
+/**
+ * Build `ToolDef[]` entries with `execution.type: 'human'` for
+ * human-in-the-loop tools (butler §9). The app BE declares the descriptor
+ * (description, parameters, timeout defaults); the FE registers a
+ * `{tool: ToolComponent}` renderer keyed by tool name; Butler suspends the
+ * loop until the FE posts the answer directly to Alfred (stream-token
+ * auth, no webhook round-trip, no `AgentTool.execute`).
+ */
+export function toHumanToolset(tools: HumanToolDef[]): ToolDef[] {
+	return tools.map((tool) => ({
+		name: tool.name,
+		description: tool.description,
+		parameters: tool.parameters,
+		execution: {
+			type: 'human',
+			timeout_s: tool.timeout_s ?? 0,
+			on_timeout: tool.on_timeout ?? 'autopick',
+			...(tool.default_value !== undefined ? { default_value: tool.default_value } : {}),
+		},
+	}))
+}
+
+/**
+ * The `ask_human` multiple-choice convention shipped by `emw-lib` (one
+ * common human tool; apps may declare their own via {@link toHumanToolset}).
+ * Each question carries options — the FIRST is the preferred default
+ * (timeout autopick). One submit per call: the FE answers all questions at
+ * once.
+ */
+export function askHumanTool(opts?: {
+	timeout_s?: number
+	on_timeout?: 'autopick' | 'error'
+}): ToolDef {
+	return toHumanToolset([
+		{
+			name: 'ask_human',
+			description:
+				'Ask the human a list of questions (each with options; the first option' +
+				' is the preferred default). The generation pauses until the human' +
+				' answers or the timeout policy fires. Answer all questions at once —' +
+				' one submit per call.',
+			parameters: {
+				type: 'object',
+				properties: {
+					questions: {
+						type: 'array',
+						minItems: 1,
+						items: {
+							type: 'object',
+							properties: {
+								id: { type: 'string' },
+								text: { type: 'string' },
+								options: { type: 'array', items: { type: 'string' }, minItems: 1 },
+								allow_free_text: { type: 'boolean' },
+							},
+							required: ['id', 'text', 'options'],
+						},
+					},
+					timeout_s: {
+						type: 'number',
+						description: 'Wait deadline in seconds; 0 = indefinitely (default).',
+					},
+					on_timeout: {
+						type: 'string',
+						enum: ['autopick', 'error'],
+						description: 'Expiry policy: autopick first options, or tool error.',
+					},
+				},
+				required: ['questions'],
+			},
+			timeout_s: opts?.timeout_s ?? 0,
+			on_timeout: opts?.on_timeout ?? 'autopick',
+		},
+	])[0]
+}
+
 export interface PromptToolDef extends BuiltinToolDef {
 	/** Alias allowlist: `text | extract | vision | jev` (butler §7). */
 	alias: 'text' | 'extract' | 'vision' | 'jev'
@@ -197,6 +273,8 @@ export interface MixedToolsetOptions {
 	builtinDefs?: BuiltinToolDef[]
 	/** `emw`-defined sidecars (`execution.type: 'prompt'`). */
 	promptTools?: PromptToolDef[]
+	/** Human-in-the-loop tools (`execution.type: 'human'`, butler §9). */
+	humanTools?: HumanToolDef[]
 	policy?: ToolsetPolicy
 	timeoutMs?: number
 }
@@ -204,8 +282,9 @@ export interface MixedToolsetOptions {
 /**
  * Build a mixed session toolset: hard-coded builtins (Alfred executes
  * in-process, no keys) + webhook-defined callbacks (the host executes via
- * the generation's `webhook_url`) + `prompt` sidecars — so the caller
- * selects from one list instead of wiring three `execution` types by hand.
+ * the generation's `webhook_url`) + `prompt` sidecars + `human` tools — so
+ * the caller selects from one list instead of wiring four `execution`
+ * types by hand.
  *
  * Name collisions resolve in favour of the host: a `callback` tool shadows
  * a builtin of the same name (the host's Postgres-backed tool wins over the
@@ -227,8 +306,15 @@ export function toMixedToolset(opts: MixedToolsetOptions): ToolsetConfig {
 		})
 	)
 	const prompts = (opts.promptTools ?? []).map(toPromptTool)
+	const humans = toHumanToolset(
+		(opts.humanTools ?? []).filter((t) => {
+			if (seen.has(t.name) || callbackNames.has(t.name)) return false
+			seen.add(t.name)
+			return true
+		})
+	)
 	return {
-		tools: [...builtins, ...callbackDefs, ...prompts],
+		tools: [...builtins, ...callbackDefs, ...prompts, ...humans],
 		policy: opts.policy,
 	}
 }

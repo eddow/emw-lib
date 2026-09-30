@@ -77,14 +77,15 @@ const handler = createWebhookHandler({
   server-only (never the browser barrel). `ToolScope` carries
   `generationId` alongside `sessionId`/`toolCallId`.
 
-## Tool selection: hard-coded builtins + webhook-defined callbacks
+## Tool selection: hard-coded builtins + webhook-defined callbacks + human tools
 
 ```ts
-import { BUILTIN_GENERIC, toMixedToolset } from 'emw-lib'
+import { BUILTIN_GENERIC, askHumanTool, toMixedToolset } from 'emw-lib'
 
 const toolset = toMixedToolset({
   callbackTools: agentTools, // host-owned, `execution.type: 'callback'`
   builtinDefs: BUILTIN_GENERIC, // hard-coded, `execution.type: 'builtin'`
+  humanTools: [myDatePicker], // FE-rendered, `execution.type: 'human'` (+ ask_human below)
   policy: { max_iterations: 5 },
 })
 ```
@@ -102,15 +103,48 @@ const toolset = toMixedToolset({
   `test_tool_specs_match_handlers`); keep the mirror in sync when adding a
   builtin.
 
+## Human-in-the-loop (`execution.type: 'human'`, butler §9)
+
+Any tool with `execution.type: 'human'` suspends the loop until the FE
+answers. The app BE declares the descriptor (description, parameters,
+timeout defaults via `toHumanToolset`); the FE registers a
+`{tool: ToolComponent}` renderer keyed by tool name via `AlfredChat`'s
+`humanTools` prop; Butler stores the raw arguments and feeds the raw posted
+value back. `ask_human` (`askHumanTool()`, always advertised by `emw`) is
+the multiple-choice convention: questions with options (first = preferred
+default), one submit per call, rendered by the built-in `AskHumanCard`.
+
+```svelte
+<AlfredChat {credential} {history} {onsend} humanTools={{ pick_date: DatePicker }} />
+```
+
+- Answers post FE → Alfred direct (`AlfredClient.answerHuman` /
+  `answerAskHuman`, stream-token auth, no BE hop); `humanPending` lists
+  still-`waiting` asks for fresh attaches. Timeouts: `timeout_s: 0` = wait
+  indefinitely, `on_timeout: 'autopick'` resolves with `default_value`
+  (`ask_human`: each question's first option), `'error'` resolves as a tool
+  error. The wait consumes neither `max_iterations` nor LLM cost.
+- Tools with no registered renderer fall back to `HumanJsonFallback` (answer
+  as JSON). `GenerationStream.status` gains `waiting` + `pendingHuman`;
+  `transcript.ts` maps `human_question`/`human_answer` to `role: 'human'`
+  messages carrying the structured payload for the renderer.
+
 ## Chat: stream-only (`GenerationStream` + `onsend`)
 
 ```svelte
-<AlfredChat credential={{ generation_id, stream_token, stream_url }} onsend={send} />
+<AlfredChat credential={{ generation_id, stream_token, stream_url }} history={items} onsend={send} />
 ```
 
 - The component owns a `GenerationStream` (never a module singleton — `$state`
   at module scope leaks across SSR). It attaches the credential on mount and
-  renders the transcript from live stream events.
+  renders the transcript from `history` (durable, APP-fetched) followed by the
+  live stream events.
+- `credential: null` is valid: no stream attaches, the transcript still renders
+  from `history`, and the first `onsend` creates the generation. This is the
+  reload case — a chat with prior turns but no live generation.
+- `history` is construction-time config (like `credential`): the APP's `load`
+  fetches Alfred `/history` server-to-server and passes it in; a remount picks
+  up new values.
 - Sending goes browser → APP action (`onsend(prompt)` → per-policy APP call)
   → new credential back (or `null` to stay on the current stream). The
   component never creates/prompts/steers directly — the APP owns
@@ -132,7 +166,7 @@ const toolset = toMixedToolset({
 | `transcript.ts` — history/events → `ChatMessage[]` | `transcript.test.ts` |
 | `session.svelte.ts` — `GenerationStream` lifecycle shell (+ `ButlerSession` alias) | `session.svelte.test.ts` |
 | `Chat.svelte` — `AlfredChat` stream-only chat | `Chat.svelte.test.ts` (+ `ChatTestHost.svelte`, test-only) |
-| `tools.ts` — `AgentTool`, `ToolScope` (+`generationId`), `toToolset`, `toMixedToolset`, `createToolHandler` | `tools.test.ts` |
+| `tools.ts` — `AgentTool`, `ToolScope` (+`generationId`), `toToolset`, `toMixedToolset`, `createToolHandler`, `toHumanToolset`, `askHumanTool` | `tools.test.ts` |
 | `server.ts` — `checkWebhookSecret`, `createWebhookHandler` | `server.test.ts` |
 
 ## Rules for contributors

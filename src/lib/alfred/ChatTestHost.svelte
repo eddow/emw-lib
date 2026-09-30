@@ -1,22 +1,27 @@
 <script lang="ts">
 	import Chat from './Chat.svelte'
-	import type { StreamCredential } from './types.js'
+	import type { HistoryItem, StreamCredential } from './types.js'
 
 	let {
 		credential,
+		history = [],
 		onsend = null
 	}: {
-		credential?: StreamCredential
+		credential?: StreamCredential | null
+		history?: HistoryItem[]
 		onsend?: ((prompt: string) => Promise<StreamCredential | null>) | null
 	} = $props()
 </script>
 
 <Chat
-	credential={credential ?? {
-		generation_id: 'gen_1',
-		stream_token: 'test-token',
-		stream_url: 'http://localhost:8192/streams/gen_1'
-	}}
+	credential={credential === undefined
+		? {
+				generation_id: 'gen_1',
+				stream_token: 'test-token',
+				stream_url: 'http://localhost:8192/streams/gen_1'
+			}
+		: credential}
+	{history}
 	{onsend}
 />
 

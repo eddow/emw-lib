@@ -17,9 +17,12 @@
  */
 
 import type {
+	AskHumanResult,
 	CreateSessionInput,
 	FetchFn,
 	HistoryItem,
+	HumanAnswerInput,
+	HumanPending,
 	LiveEvent,
 	PlayResult,
 	PollResponse,
@@ -28,6 +31,8 @@ import type {
 	SessionInfo,
 	SessionSummary,
 	StreamCredential,
+	ToolCallInput,
+	ToolCallResult,
 	ToolDef,
 } from './types.js'
 
@@ -56,14 +61,14 @@ export interface AlfredClientOptions {
 	 */
 	baseUrl?: string
 	/**
-		* Shared secret for the BE control plane (see `butler/docs/alfred.md` §7).
+	 * Shared secret for the BE control plane (see `butler/docs/alfred.md` §7).
 	 * When set, every BE call carries `X-Alfred-Secret`. The browser never
 	 * holds the secret — it uses `streamToken` instead. Empty = no header
 	 * (local dev, mirroring Butler's skipped check).
 	 */
 	webhookSecret?: string
 	/**
-		* Generation stream capability (see `butler/docs/alfred.md` §7.1). When set,
+	 * Generation stream capability (see `butler/docs/alfred.md` §7.1). When set,
 	 * stream calls carry it as `Authorization: Bearer <token>` (fetch-reader
 	 * primary; `?stream_token=` / `X-Stream-Token` are server-accepted
 	 * aliases the client never needs to use).
@@ -187,6 +192,48 @@ function maxDurableSeq(events: LiveEvent[]): number | null {
 		if (typeof e.seq === 'number' && (max === null || e.seq > max)) max = e.seq
 	}
 	return max
+}
+
+/**
+ * Render a FastAPI error body as a human-readable message. FastAPI sends
+ * `{"detail": "string"}` for `HTTPException` but `{"detail": [...]}` (a
+ * per-field error list) for 422 request-validation failures — `String()`
+ * on the latter yields `[object Object],[object Object]`. Each entry is
+ * rendered as `<loc>: <msg> (got <input>)`, joined with `; `. A dict detail
+ * (e.g. the 409 conflict `{error, active_generation_id}`) renders its
+ * `error`/`message`/`msg` field when present, else the raw JSON.
+ */
+export function formatDetail(detail: unknown): string | undefined {
+	if (!detail || typeof detail !== 'object' || !('detail' in detail)) return undefined
+	const raw = (detail as { detail: unknown }).detail
+	if (typeof raw === 'string') return raw
+	if (Array.isArray(raw)) {
+		const parts = raw.map((entry) => {
+			if (!entry || typeof entry !== 'object') return String(entry)
+			const { loc, msg, input } = entry as { loc?: unknown; msg?: unknown; input?: unknown }
+			const where = Array.isArray(loc) ? loc.map(String).join('.') : undefined
+			const what = typeof msg === 'string' ? msg : JSON.stringify(msg)
+			const got = input === undefined ? undefined : JSON.stringify(input)
+			return [where, what, got === undefined ? undefined : `got ${got}`]
+				.filter((p) => p !== undefined && p !== '')
+				.join(': ')
+		})
+		return parts.length ? parts.join('; ') : undefined
+	}
+	if (raw && typeof raw === 'object') {
+		const rec = raw as Record<string, unknown>
+		for (const key of ['error', 'message', 'msg']) {
+			if (typeof rec[key] === 'string' && (rec[key] as string).trim() !== '') {
+				return rec[key] as string
+			}
+		}
+		try {
+			return JSON.stringify(raw)
+		} catch {
+			return undefined
+		}
+	}
+	return undefined
 }
 
 export class AlfredClient {
@@ -405,6 +452,37 @@ export class AlfredClient {
 		return this.beJson('GET', '/tools', undefined, signal)
 	}
 
+	/**
+	 * `POST /tools/call` → `{result} | {error}` — invoke one hard-coded
+	 * tool directly, outside the agent loop (butler `POST /tools/call`).
+	 * BE-only. Stateless: writes no messages/events rows.
+	 *
+	 * `execution` omitted means builtin; an explicit descriptor selects the
+	 * passthrough path (`http` needs `execution.url`, `callback` needs
+	 * `webhook_url`, `prompt` needs `alias` + templates inline). `session_id`
+	 * is envelope context for store-backed builtins (`artifact`, `recall`,
+	 * `document` over stored artifacts) — NOT a tool argument.
+	 *
+	 * Tool-level failures arrive as `{error}` (returned, not thrown);
+	 * only transport/envelope problems (401/404/422/…) throw `AlfredError`.
+	 */
+	async callTool(input: ToolCallInput, signal?: AbortSignal): Promise<ToolCallResult> {
+		if (!input?.name || typeof input.name !== 'string' || input.name.trim() === '')
+			invalid('name must be a non-empty string')
+		return this.beJson(
+			'POST',
+			'/tools/call',
+			compact({
+				name: input.name,
+				arguments: input.arguments ?? {},
+				session_id: input.session_id,
+				execution: input.execution,
+				webhook_url: input.webhook_url,
+			}),
+			signal
+		)
+	}
+
 	// -- streams (FE, token) ----------------------------------------------------------
 
 	/**
@@ -493,6 +571,88 @@ export class AlfredClient {
 		}
 	}
 
+	// -- human answers (FE, token) ----------------------------------------------------
+
+	/**
+	 * `POST /streams/{gid}/answer/{toolCallId}` — answer a pending human
+	 * tool call (butler §9). FE → Alfred direct, no BE hop: the stream token
+	 * is the credential (same rule as SSE/poll).
+	 *
+	 * `value` is the raw answer for generic human tools; `ask_human` accepts
+	 * `{ answers: [...] }` (or the bare answers array). Idempotent: answering
+	 * an already-resolved wait replays the stored value (`duplicate: True`).
+	 * Only transport/envelope problems (401/404/422/…) throw `AlfredError`.
+	 */
+	async answerHuman(
+		gid: string,
+		toolCallId: string,
+		input: HumanAnswerInput,
+		signal?: AbortSignal
+	): Promise<{ ok: true; duplicate: boolean; status: string; value: unknown }> {
+		assertGid(gid)
+		if (!toolCallId || typeof toolCallId !== 'string' || toolCallId.trim() === '')
+			invalid('toolCallId must be a non-empty string')
+		const body: Record<string, unknown> = Array.isArray(input)
+			? { answers: input }
+			: input !== null && typeof input === 'object' && !('value' in input) && !('answers' in input)
+				? { value: input }
+				: (input as Record<string, unknown>)
+		const headers: Record<string, string> = { 'content-type': 'application/json' }
+		if (this.streamToken) headers['authorization'] = `Bearer ${this.streamToken}`
+		const res = await this.send(
+			`${this.baseUrl}/streams/${encodeURIComponent(gid)}/answer/${encodeURIComponent(toolCallId)}`,
+			{ method: 'POST', headers, body: JSON.stringify(body) },
+			signal
+		)
+		if (!res.ok) throw await this.httpError(res)
+		try {
+			return (await res.json()) as {
+				ok: true
+				duplicate: boolean
+				status: string
+				value: unknown
+			}
+		} catch (err) {
+			throw new AlfredError(`invalid JSON response: ${(err as Error).message}`, { code: 'parse' })
+		}
+	}
+
+	/**
+	 * `GET /streams/{gid}/human` → `{ waiting: HumanPending[] }` — the
+	 * still-`waiting` human asks for a generation (butler §9). Same stream
+	 * credential as SSE/poll. Lets a freshly-attached UI render pending
+	 * question cards without replaying the whole stream.
+	 */
+	async humanPending(gid: string, signal?: AbortSignal): Promise<{ waiting: HumanPending[] }> {
+		assertGid(gid)
+		const headers: Record<string, string> = {}
+		if (this.streamToken) headers['authorization'] = `Bearer ${this.streamToken}`
+		const res = await this.send(
+			`${this.baseUrl}/streams/${encodeURIComponent(gid)}/human`,
+			{ method: 'GET', headers },
+			signal
+		)
+		if (!res.ok) throw await this.httpError(res)
+		try {
+			return (await res.json()) as { waiting: HumanPending[] }
+		} catch (err) {
+			throw new AlfredError(`invalid JSON response: ${(err as Error).message}`, { code: 'parse' })
+		}
+	}
+
+	/**
+	 * Answer an `ask_human` call with per-question answers (typed alias of
+	 * {@link answerHuman} for the multiple-choice convention).
+	 */
+	async answerAskHuman(
+		gid: string,
+		toolCallId: string,
+		answers: AskHumanResult['answers'],
+		signal?: AbortSignal
+	): Promise<{ ok: true; duplicate: boolean; status: string; value: unknown }> {
+		return this.answerHuman(gid, toolCallId, { answers }, signal)
+	}
+
 	// -- internals --------------------------------------------------------
 
 	/** Perform a fetch with timeout/abort handling, mapping failures to {@link AlfredError}. */
@@ -549,10 +709,7 @@ export class AlfredClient {
 		} catch {
 			detail = undefined
 		}
-		const message =
-			(detail && typeof detail === 'object' && 'detail' in detail
-				? String((detail as { detail: unknown }).detail)
-				: undefined) ?? `HTTP ${res.status} ${res.statusText}`
+		const message = formatDetail(detail) ?? `HTTP ${res.status} ${res.statusText}`
 		return new AlfredError(message, { status: res.status, code: 'http', detail })
 	}
 

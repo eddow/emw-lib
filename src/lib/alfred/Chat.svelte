@@ -1,8 +1,11 @@
 <script lang="ts">
+	import type { Component } from 'svelte'
 	import { AlfredClient } from './client.js'
 	import { GenerationStream } from './session.svelte.js'
 	import { buildTranscript } from './transcript.js'
-	import type { StreamCredential } from './types.js'
+	import AskHumanCard from './AskHumanCard.svelte'
+	import HumanJsonFallback from './HumanJsonFallback.svelte'
+	import type { HistoryItem, HumanAnswer, StreamCredential } from './types.js'
 
 	/**
 	 * Minimal generic chat over a {@link GenerationStream} (stream-only).
@@ -17,23 +20,47 @@
 	 * new credential back via `credential` prop change (remount or `attach`).
 	 * This component never creates/prompts/steers directly.
 	 *
+	 * Human tools (butler §9) render inline: `ask_human` uses the built-in
+	 * {@link AskHumanCard}; apps register their own `{tool: ToolComponent}`
+	 * renderers keyed by tool name via `humanTools`. Answers post FE →
+	 * Alfred direct (stream-token auth, no BE hop).
+	 *
 	 * ```svelte
 	 * <AlfredChat credential={{ generation_id, stream_token, stream_url }} onsend={send} />
 	 * ```
 	 */
+	export interface HumanToolComponentProps {
+		toolCallId: string
+		toolName: string
+		/** Raw model arguments (the question). */
+		parameters: Record<string, unknown>
+		answered: unknown | null
+		onanswer: (value: unknown) => Promise<void>
+	}
 	let {
 		credential,
+		history = [],
 		showThought = false,
 		placeholder = 'Ask…',
 		onsend = null,
-		onerror = null
+		onerror = null,
+		humanTools = {}
 	}: {
 		/**
 		 * Stream credential (`{ generation_id, stream_token, stream_url }`)
 		 * as served by the BE's prompt/play response. The base URL comes from
-		 * the credential — the browser never hardcodes a host.
+		 * the credential — the browser never hardcodes a host. `null` when no
+		 * generation is live: the transcript still renders from `history` and
+		 * the first send creates a generation via `onsend`.
 		 */
-		credential: StreamCredential
+		credential: StreamCredential | null
+		/**
+		 * Durable conversation history (Alfred `/history`, fetched by the APP's
+		 * `load`). Rendered before the live stream events, so a reload shows the
+		 * prior turns instead of an empty transcript. Construction-time config —
+		 * a remount picks up new values.
+		 */
+		history?: HistoryItem[]
 		/** Show the live reasoning draft alongside the answer draft. */
 		showThought?: boolean
 		/** Composer placeholder. */
@@ -46,34 +73,41 @@
 		onsend?: ((prompt: string) => Promise<StreamCredential | null>) | null
 		/** Called with the error message on send/stream failures. */
 		onerror?: ((message: string) => void) | null
+		/**
+		 * FE-registered human-tool renderers, keyed by tool name. Each
+		 * receives the raw model arguments as `parameters` and posts its
+		 * produced value via `onanswer`. `ask_human` needs no entry (built
+		 * in); unknown tools with no entry render a JSON fallback.
+		 */
+		humanTools?: Record<string, Component<HumanToolComponentProps>>
 	} = $props()
 
-	const stream = new GenerationStream({
+	const client = new AlfredClient({
 		// svelte-ignore state_referenced_locally: construction-time config, a remount picks up new values.
-		client: new AlfredClient({
-			baseUrl: credential.stream_url,
-			streamToken: credential.stream_token
-		})
+		baseUrl: credential?.stream_url,
+		// svelte-ignore state_referenced_locally: construction-time config, a remount picks up new values.
+		streamToken: credential?.stream_token
 	})
+	const stream = new GenerationStream({ client })
 	$effect(() => () => stream.dispose())
 
 	// Props are construction-time config — capture once; a remount picks up
 	// new values. (`showThought` stays live: it only toggles rendering.)
 	// svelte-ignore state_referenced_locally: construction-time config, a remount picks up new values.
-	const initial = { credential }
+	const initial = { credential, history }
 
 	let draft = $state('')
 	let sending = $state(false)
 
 	const transcript = $derived(
-		buildTranscript([], stream.events, {
+		buildTranscript(initial.history, stream.events, {
 			text: stream.text || undefined,
 			thought: stream.thought || undefined,
 			showThought
 		})
 	)
 	const busy = $derived(sending || stream.isStreaming)
-	const canSend = $derived(draft.trim().length > 0 && !sending && stream.id !== null)
+	const canSend = $derived(draft.trim().length > 0 && !sending)
 
 	function fail(message: string): void {
 		stream.error = message
@@ -81,6 +115,7 @@
 	}
 
 	async function start(): Promise<void> {
+		if (!initial.credential) return // idle: history only, no stream to attach
 		try {
 			await stream.attach(initial.credential)
 		} catch (err) {
@@ -91,7 +126,7 @@
 
 	async function send(): Promise<void> {
 		const prompt = draft.trim()
-		if (!prompt || sending || !stream.id) return
+		if (!prompt || sending) return
 		if (!onsend) {
 			fail('no send handler — the APP must provide onsend')
 			return
@@ -114,6 +149,51 @@
 			void send()
 		}
 	}
+
+	/**
+	 * Answers already received for a question, matched by `tool_call_id`:
+	 * lets a `human_question` render as answered (disabled card + receipt)
+	 * once its `human_answer` arrives, and keeps history replay working
+	 * (question and answer are separate durable events).
+	 */
+	const answersByCall = $derived(() => {
+		const map = new Map<string, { answers?: HumanAnswer[]; value?: unknown }>()
+		for (const msg of transcript) {
+			if (msg.role === 'human' && msg.human?.answered) {
+				map.set(msg.human.toolCallId, {
+					answers: msg.human.answers,
+					value: msg.human.value
+				})
+			}
+		}
+		return map
+	})
+
+	async function answerAskHuman(toolCallId: string, answers: HumanAnswer[]): Promise<void> {
+		if (!stream.id) {
+			fail('no live generation to answer')
+			return
+		}
+		try {
+			await client.answerHuman(stream.id, toolCallId, { answers })
+		} catch (err) {
+			fail(err instanceof Error ? err.message : String(err))
+			throw err
+		}
+	}
+
+	async function answerGeneric(toolCallId: string, value: unknown): Promise<void> {
+		if (!stream.id) {
+			fail('no live generation to answer')
+			return
+		}
+		try {
+			await client.answerHuman(stream.id, toolCallId, { value })
+		} catch (err) {
+			fail(err instanceof Error ? err.message : String(err))
+			throw err
+		}
+	}
 </script>
 
 <div class="alfred-chat" data-testid="alfred-chat">
@@ -132,6 +212,36 @@
 				data-role={msg.role}
 			>
 				{msg.text}
+				{#if msg.role === 'human' && msg.human && !msg.human.answered}
+					{@const receipt = answersByCall().get(msg.human.toolCallId)}
+					{#if msg.human.toolName === 'ask_human' && msg.human.questions}
+						<AskHumanCard
+							questions={msg.human.questions}
+							answered={receipt?.answers ?? null}
+							onanswer={(answers) => answerAskHuman(msg.human!.toolCallId, answers)}
+						/>
+					{:else if humanTools[msg.human.toolName]}
+						{@const Tool = humanTools[msg.human.toolName]}
+						<Tool
+							toolCallId={msg.human.toolCallId}
+							toolName={msg.human.toolName}
+							parameters={(msg.human.questions
+								? { questions: msg.human.questions }
+								: (msg.human.parameters ?? {})) as Record<string, unknown>}
+							answered={receipt?.value ?? null}
+							onanswer={(value) => answerGeneric(msg.human!.toolCallId, value)}
+						/>
+					{:else}
+						<details class="alfred-human-fallback" data-testid="alfred-human-fallback">
+							<summary>Answer in JSON (no renderer registered for {msg.human.toolName})</summary>
+							<HumanJsonFallback
+								toolCallId={msg.human.toolCallId}
+								answered={receipt?.value ?? null}
+								onanswer={(value) => answerGeneric(msg.human!.toolCallId, value)}
+							/>
+						</details>
+					{/if}
+				{/if}
 			</div>
 		{:else}
 			<p class="alfred-chat-empty" data-testid="alfred-chat-empty">No messages yet.</p>
@@ -152,7 +262,6 @@
 			bind:value={draft}
 			{placeholder}
 			rows={2}
-			disabled={stream.id === null}
 			{onkeydown}
 		></textarea>
 		<button

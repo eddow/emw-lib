@@ -8,12 +8,20 @@
  */
 
 import { isDeltaEvent } from './stream.js'
-import type { DurableEvent, HistoryItem, LiveEvent } from './types.js'
+import type {
+	DurableEvent,
+	HistoryItem,
+	HumanAnswer,
+	HumanAnswerPayload,
+	HumanQuestion,
+	HumanQuestionPayload,
+	LiveEvent,
+} from './types.js'
 
 /** One renderable chat bubble. */
 export interface ChatMessage {
 	id: string
-	role: 'user' | 'assistant' | 'tool' | 'system'
+	role: 'user' | 'assistant' | 'tool' | 'system' | 'human'
 	text: string
 	/** Durable `seq` when the message came from a durable event. */
 	seq?: number
@@ -21,6 +29,26 @@ export interface ChatMessage {
 	pending?: boolean
 	/** Reasoning content — the UI hides it unless `showThought`. */
 	thought?: boolean
+	/**
+	 * Structured human-tool payload for the FE-registered renderer.
+	 * Present on `role: 'human'` messages: the `human_question` carries the
+	 * question (tool name + arguments/questions), the `human_answer` the
+	 * receipt (answers/value + provenance). `answered` is true on receipts
+	 * and on questions already resolved (history replay).
+	 */
+	human?: {
+		toolCallId: string
+		toolName: string
+		questions?: HumanQuestion[]
+		parameters?: Record<string, unknown>
+		timeout_s?: number
+		on_timeout?: 'autopick' | 'error'
+		answers?: HumanAnswer[]
+		value?: unknown
+		autopicked?: boolean
+		timed_out?: boolean
+		answered: boolean
+	}
 }
 
 /** Live draft rendered as pending bubble(s) by {@link buildTranscript}. */
@@ -67,7 +95,7 @@ function payloadText(payload: unknown): string {
 }
 
 /** Map one durable event to a message; `null` when it renders nothing. */
-function eventMessage(
+export function eventMessage(
 	type: string,
 	payload: unknown,
 	id: string,
@@ -91,6 +119,67 @@ function eventMessage(
 			const p = (payload ?? {}) as Record<string, unknown>
 			const text = 'output' in p ? stringify(p.output) : stringify(p.error)
 			return text ? { id, role: 'tool', text, seq } : null
+		}
+		case 'human_question': {
+			const p = (payload ?? {}) as Partial<HumanQuestionPayload>
+			const toolCallId = typeof p.tool_call_id === 'string' ? p.tool_call_id : id
+			const toolName = typeof p.name === 'string' ? p.name : 'human'
+			const questions = Array.isArray(p.questions) ? p.questions : undefined
+			const args =
+				p.arguments && typeof p.arguments === 'object'
+					? (p.arguments as Record<string, unknown>)
+					: undefined
+			const text =
+				questions?.map((q) => q.text).join('\n') ??
+				(args ? stringify(args) : `${toolName}: awaiting human input`)
+			return {
+				id,
+				role: 'human',
+				text,
+				seq,
+				human: {
+					toolCallId,
+					toolName,
+					questions,
+					parameters:
+						p.parameters && typeof p.parameters === 'object'
+							? (p.parameters as Record<string, unknown>)
+							: undefined,
+					timeout_s: typeof p.timeout_s === 'number' ? p.timeout_s : undefined,
+					on_timeout: p.on_timeout,
+					answered: false,
+				},
+			}
+		}
+		case 'human_answer': {
+			const p = (payload ?? {}) as Partial<HumanAnswerPayload>
+			const toolCallId = typeof p.tool_call_id === 'string' ? p.tool_call_id : id
+			const toolName = typeof p.tool_name === 'string' ? p.tool_name : 'human'
+			const answers = Array.isArray(p.answers) ? p.answers : undefined
+			const receipt =
+				answers?.map((a) => a.choice ?? a.text ?? a.id).join(', ') ??
+				(p.value !== undefined ? stringify(p.value) : 'answered')
+			const flags = [
+				p.autopicked ? '(autopicked)' : '',
+				p.timed_out && !p.autopicked ? '(timed out)' : '',
+			]
+				.filter(Boolean)
+				.join(' ')
+			return {
+				id,
+				role: 'human',
+				text: [`answered: ${receipt}`, flags].filter(Boolean).join(' ').trim(),
+				seq,
+				human: {
+					toolCallId,
+					toolName,
+					answers,
+					value: p.value,
+					autopicked: p.autopicked,
+					timed_out: p.timed_out,
+					answered: true,
+				},
+			}
 		}
 		case 'done':
 			return { id, role: 'system', text: `done: ${payloadText(payload) || 'stop'}`, seq }

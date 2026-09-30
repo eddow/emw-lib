@@ -1,6 +1,8 @@
+export { default as AskHumanCard } from './AskHumanCard.svelte'
 export * from './builtins.js'
 export { default as AlfredChat } from './Chat.svelte'
 export * from './client.js'
+export { default as HumanJsonFallback } from './HumanJsonFallback.svelte'
 export * from './session.svelte.js'
 export * from './stream.js'
 export * from './tools.js'
@@ -11,6 +13,8 @@ export * from './transcript.js'
 export type {
 	AgentConfig,
 	AlfredEventType,
+	AskHumanInput,
+	AskHumanResult,
 	CreateSessionInput,
 	DeltaEvent,
 	DeltaType,
@@ -23,6 +27,13 @@ export type {
 	HistoryItem,
 	HistoryItemEvent,
 	HistoryItemMessage,
+	HumanAnswer,
+	HumanAnswerInput,
+	HumanAnswerPayload,
+	HumanPending,
+	HumanQuestion,
+	HumanQuestionPayload,
+	HumanToolDef,
 	LiveEvent,
 	PlayResult,
 	PollResponse,
@@ -31,6 +42,8 @@ export type {
 	SessionInfo,
 	SessionSummary,
 	StreamCredential,
+	ToolCallInput,
+	ToolCallResult,
 	ToolDef,
 	ToolsetConfig,
 	ToolsetPolicy,

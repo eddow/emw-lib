@@ -95,4 +95,72 @@ describe('buildTranscript', () => {
 	it('omits the draft when there is none', () => {
 		expect(buildTranscript([], [])).toEqual([])
 	})
+
+	it('maps human_question to a human message with structured payload', () => {
+		const events: LiveEvent[] = [
+			{
+				seq: 3,
+				type: 'human_question',
+				payload: {
+					tool_call_id: 'call_1',
+					name: 'ask_human',
+					questions: [{ id: 'q', text: 'Pick?', options: ['a', 'b'] }],
+					timeout_s: 0,
+					on_timeout: 'autopick',
+				},
+				ts: 't',
+			},
+		]
+		const out = eventsToMessages(events)
+		expect(out).toHaveLength(1)
+		expect(out[0]).toMatchObject({ role: 'human', text: 'Pick?', seq: 3 })
+		expect(out[0].human).toMatchObject({
+			toolCallId: 'call_1',
+			toolName: 'ask_human',
+			answered: false,
+		})
+		expect(out[0].human?.questions).toHaveLength(1)
+	})
+
+	it('maps generic human_question with arguments + parameters', () => {
+		const events: LiveEvent[] = [
+			{
+				seq: 3,
+				type: 'human_question',
+				payload: {
+					tool_call_id: 'call_g',
+					name: 'pick_date',
+					arguments: { label: 'When?' },
+					parameters: { type: 'object', required: ['label'] },
+					timeout_s: 0,
+					on_timeout: 'autopick',
+				},
+				ts: 't',
+			},
+		]
+		const out = eventsToMessages(events)
+		expect(out[0].human).toMatchObject({ toolCallId: 'call_g', toolName: 'pick_date' })
+		expect(out[0].human?.parameters).toMatchObject({ required: ['label'] })
+	})
+
+	it('maps human_answer to a receipt with provenance', () => {
+		const events: LiveEvent[] = [
+			{
+				seq: 4,
+				type: 'human_answer',
+				payload: {
+					tool_call_id: 'call_1',
+					tool_name: 'ask_human',
+					timed_out: true,
+					autopicked: true,
+					answers: [{ id: 'q', choice: 'a', autopicked: true, timed_out: true }],
+				},
+				ts: 't',
+			},
+		]
+		const out = eventsToMessages(events)
+		expect(out[0]).toMatchObject({ role: 'human', seq: 4 })
+		expect(out[0].text).toContain('autopicked')
+		expect(out[0].human).toMatchObject({ answered: true, autopicked: true })
+	})
 })

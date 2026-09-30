@@ -1,6 +1,6 @@
 ---
 name: emw-lib
-description: Shared TypeScript library for emedware frontends (Alfred client, SERP adapters, BODACC scraper). Use when creating, editing, or testing anything under emw-lib/src/lib, or when wiring emw to Alfred via emw-lib.
+description: Shared TypeScript library for emedware frontends (Alfred client). Use when creating, editing, or testing anything under emw-lib/src/lib, or when wiring emw to Alfred via emw-lib.
 ---
 
 # emw-lib
@@ -12,8 +12,6 @@ Client-safe shared library (`emw-lib/src/lib`). No `node:` imports, no
 ## Layout
 
 - `src/lib/alfred/` — Alfred client. Full guide: `docs/alfred.md`. Protocol: `butler/docs/alfred.md`.
-- `src/lib/serps/` — search adapters, `FetchFn`-injected.
-- `src/lib/scrappers/bodacc/` — BODACC scraper client.
 - `docs/` — `README.md` (conventions + commands), `alfred.md` (client guide).
 
 ## Alfred quick reference

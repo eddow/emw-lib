@@ -16,7 +16,13 @@ function durable(
 
 describe('createStreamState', () => {
 	it('starts streaming with empty drafts and cursor 0', () => {
-		expect(createStreamState()).toEqual({ text: '', thought: '', status: 'streaming', lastSeq: 0 })
+		expect(createStreamState()).toEqual({
+			text: '',
+			thought: '',
+			status: 'streaming',
+			lastSeq: 0,
+			pendingHuman: [],
+		})
 	})
 })
 
@@ -122,5 +128,69 @@ describe('applyLiveEvent', () => {
 		expect(isDeltaEvent(impostor)).toBe(false)
 		const next = applyLiveEvent(createStreamState(), impostor)
 		expect(next.lastSeq).toBe(5)
+	})
+
+	it('tracks human waits: question → waiting, answer → streaming', () => {
+		let state = createStreamState()
+		state = applyLiveEvent(
+			state,
+			durable('human_question', 3, {
+				tool_call_id: 'call_1',
+				name: 'ask_human',
+				questions: [{ id: 'q', text: 'Pick?', options: ['a', 'b'] }],
+				timeout_s: 0,
+				on_timeout: 'autopick',
+			})
+		)
+		expect(state.status).toBe('waiting')
+		expect(state.lastSeq).toBe(3)
+		expect(state.pendingHuman).toHaveLength(1)
+		expect(state.pendingHuman[0].tool_call_id).toBe('call_1')
+		expect(state.pendingHuman[0].tool_name).toBe('ask_human')
+		state = applyLiveEvent(
+			state,
+			durable('human_answer', 4, {
+				tool_call_id: 'call_1',
+				tool_name: 'ask_human',
+				timed_out: false,
+				autopicked: false,
+				answers: [{ id: 'q', choice: 'a', autopicked: false, timed_out: false }],
+			})
+		)
+		expect(state.status).toBe('streaming')
+		expect(state.pendingHuman).toHaveLength(0)
+		expect(state.lastSeq).toBe(4)
+	})
+
+	it('stays waiting while any human ask remains pending', () => {
+		let state = createStreamState()
+		for (const [seq, call] of [
+			[3, 'call_1'],
+			[4, 'call_2'],
+		] as const) {
+			state = applyLiveEvent(
+				state,
+				durable('human_question', seq, {
+					tool_call_id: call,
+					name: 'pick_date',
+					arguments: { label: 'When?' },
+					timeout_s: 0,
+					on_timeout: 'autopick',
+				})
+			)
+		}
+		expect(state.pendingHuman).toHaveLength(2)
+		state = applyLiveEvent(
+			state,
+			durable('human_answer', 5, {
+				tool_call_id: 'call_1',
+				tool_name: 'pick_date',
+				timed_out: false,
+				autopicked: false,
+				value: { date: '2026-10-01' },
+			})
+		)
+		expect(state.status).toBe('waiting')
+		expect(state.pendingHuman).toHaveLength(1)
 	})
 })

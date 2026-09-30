@@ -16,7 +16,7 @@
  * only, usable from browser + node.
  */
 
-/** Injectable fetch, same convention as `alfred/types.ts` and `serps/types.ts`. */
+/** Injectable fetch (`typeof fetch`), same convention as `alfred` and `openrouter`. */
 export type FetchFn = typeof fetch
 
 /** Jev primitive type. `noul` = P(true) 0..1, `choice` = pick one candidate. */

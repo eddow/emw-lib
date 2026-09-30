@@ -23,14 +23,14 @@ export interface AgentConfig {
 }
 
 /** How Alfred runs a tool. `inline_deny` is the safe default for unknown tools. */
-export type ExecutionType = 'http' | 'callback' | 'inline_deny' | 'builtin' | 'prompt'
+export type ExecutionType = 'http' | 'callback' | 'inline_deny' | 'builtin' | 'prompt' | 'human'
 
 export interface ExecutionConfig {
 	type: ExecutionType
 	/**
 	 * Target URL for `http` tools only. `callback` tools carry NO url —
 	 * the per-generation `webhook_url` on `prompt` is the only destination
-		 * (see `butler/docs/alfred.md` §2.1). A `url` sent for `callback` is ignored.
+	 * (see `butler/docs/alfred.md` §2.1). A `url` sent for `callback` is ignored.
 	 */
 	url?: string
 	timeout_ms?: number
@@ -46,6 +46,16 @@ export interface ExecutionConfig {
 	response_format?: Record<string, unknown>
 	max_tokens?: number
 	temperature?: number
+	/**
+	 * `human` execution only (butler §9): wait deadline in seconds (`0` =
+	 * wait indefinitely), expiry policy (`autopick` resolves with
+	 * `default_value`, `error` resolves as a tool error), and the autopick
+	 * value. The `ask_human` multiple-choice convention needs no
+	 * `default_value`: it autopicks each question's first option.
+	 */
+	timeout_s?: number
+	on_timeout?: 'autopick' | 'error'
+	default_value?: unknown
 }
 
 /** OpenAI-compatible tool definition plus Alfred's `execution` descriptor. */
@@ -130,7 +140,15 @@ export interface SessionSummary {
 }
 
 /** Durable event types — persisted in SQLite with a generation-local `seq`. */
-export type DurableType = 'thought' | 'tool_use' | 'tool_result' | 'answer' | 'done' | 'error'
+export type DurableType =
+	| 'thought'
+	| 'tool_use'
+	| 'tool_result'
+	| 'answer'
+	| 'done'
+	| 'error'
+	| 'human_question'
+	| 'human_answer'
 
 /** Ephemeral event types — live only, never stored. */
 export type DeltaType = 'thought_delta' | 'answer_delta' | 'tool_use_delta'
@@ -184,4 +202,133 @@ export interface PollResponse {
 	timeout: boolean
 }
 
+/**
+ * Body of `POST /tools/call` — invoke one hard-coded tool directly, outside
+ * the agent loop (see `butler/src/alfred/app.py::call_tool`). BE-only.
+ *
+ * `name` + `arguments` are the invocation; `session_id` is envelope context
+ * (NOT a tool argument) used only to scope store-backed builtins
+ * (`artifact`, `recall`, `document` over stored artifacts). `execution`
+ * omitted means builtin; an explicit descriptor selects the passthrough
+ * path (`http` needs `execution.url`, `callback` needs `webhook_url`,
+ * `prompt` needs `alias` + templates inline — no session lookup).
+ */
+export interface ToolCallInput {
+	name: string
+	arguments?: Record<string, unknown>
+	session_id?: string
+	execution?: ExecutionConfig
+	webhook_url?: string
+}
+
+/**
+ * `POST /tools/call` response — `{result} | {error}`, never both.
+ * Tool-level failures (bad args, sidecar errors, downstream non-2xx) arrive
+ * as `{error}` with HTTP 200, matching loop semantics; envelope problems
+ * (unknown name, malformed body) are HTTP 4xx surfaced as `AlfredError`.
+ */
+export type ToolCallResult = { result: unknown } | { error: unknown }
+
 export type EventPayload = Record<string, unknown>
+
+/**
+ * Human-in-the-loop (§9). Any tool with `execution.type: 'human'` suspends
+ * the loop until the FE answers. The tool's `parameters` (JSON Schema) is
+ * the contract between the app BE (declares it), the model (fills the
+ * arguments) and the FE (registers a `{tool: ToolComponent}` renderer keyed
+ * by tool name, which uses the parameters to render and produces the value).
+ * Butler stores the raw arguments as the question and feeds the raw posted
+ * value back as the tool result — it validates deeply only the `ask_human`
+ * convention below.
+ */
+
+/** One multiple-choice question of the `ask_human` convention. */
+export interface HumanQuestion {
+	id: string
+	text: string
+	/** Options; the FIRST is the preferred default (timeout autopick). */
+	options: string[]
+	allow_free_text?: boolean
+}
+
+/** Arguments the model passes to `ask_human`. */
+export interface AskHumanInput {
+	questions: HumanQuestion[]
+	/** Per-call overrides of the descriptor `timeout_s` / `on_timeout`. */
+	timeout_s?: number
+	on_timeout?: 'autopick' | 'error'
+}
+
+/** One answered question of the `ask_human` convention. */
+export interface HumanAnswer {
+	id: string
+	choice?: string
+	text?: string
+	autopicked: boolean
+	timed_out: boolean
+}
+
+/** `ask_human` tool result (fed back as the tool message content). */
+export interface AskHumanResult {
+	answers: HumanAnswer[]
+}
+
+/** Durable `human_question` payload (generic: `arguments` + `parameters`). */
+export interface HumanQuestionPayload {
+	tool_call_id: string
+	/** Tool name — selects the FE-registered renderer. */
+	name: string
+	/** `ask_human` only: the validated questions. */
+	questions?: HumanQuestion[]
+	/** Generic tools: the raw model arguments. */
+	arguments?: Record<string, unknown>
+	/** Generic tools: the descriptor `parameters` for the renderer. */
+	parameters?: Record<string, unknown>
+	timeout_s: number
+	on_timeout: 'autopick' | 'error'
+}
+
+/** Durable `human_answer` payload. */
+export interface HumanAnswerPayload {
+	tool_call_id: string
+	tool_name: string
+	timed_out: boolean
+	autopicked: boolean
+	/** `ask_human` only. */
+	answers?: HumanAnswer[]
+	/** Generic tools: the raw posted value. */
+	value?: unknown
+}
+
+/** One still-`waiting` row of `GET /streams/{gid}/human`. */
+export interface HumanPending {
+	generation_id: string
+	tool_call_id: string
+	session_id: string
+	tool_name: string
+	/** Raw model arguments (the question). */
+	payload: Record<string, unknown>
+	/** `ask_human` only. */
+	questions?: HumanQuestion[]
+	deadline: number
+	on_timeout: 'autopick' | 'error'
+	status: string
+	created_at: string
+}
+
+/** Body of `POST /streams/{gid}/answer/{tool_call_id}`. */
+export type HumanAnswerInput =
+	| { value: unknown }
+	| { answers: HumanAnswer[] }
+	| HumanAnswer[]
+	| Record<string, unknown>
+
+/** A human tool descriptor (app-BE-declared, FE-rendered). */
+export interface HumanToolDef {
+	name: string
+	description: string
+	parameters: { type: 'object'; properties: Record<string, unknown>; required?: string[] }
+	timeout_s?: number
+	on_timeout?: 'autopick' | 'error'
+	default_value?: unknown
+}

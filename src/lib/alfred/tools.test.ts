@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
 	type AgentTool,
+	askHumanTool,
 	type BuiltinToolDef,
 	createToolHandler,
 	DEFAULT_TOOL_TIMEOUT_MS,
+	toHumanToolset,
 	toMixedToolset,
 	toToolset,
 } from './tools.js'
@@ -262,5 +264,71 @@ describe('toMixedToolset', () => {
 		const toolset = toMixedToolset({ builtinDefs: [builtin, live] })
 		expect(toolset.tools).toHaveLength(1)
 		expect(toolset.tools?.[0].description).toBe('Keyword web search')
+	})
+
+	it('appends human tools after builtins/callbacks/prompts', () => {
+		const toolset = toMixedToolset({
+			callbackTools: [echoTool()],
+			builtinDefs: [builtin],
+			humanTools: [
+				{
+					name: 'pick_date',
+					description: 'Pick a date',
+					parameters: { type: 'object', properties: { label: { type: 'string' } } },
+				},
+			],
+		})
+		expect(toolset.tools?.map((t) => t.execution?.type)).toEqual(['builtin', 'callback', 'human'])
+	})
+})
+
+describe('toHumanToolset / askHumanTool', () => {
+	it('emits URL-free human descriptors with timeout defaults', () => {
+		const defs = toHumanToolset([
+			{
+				name: 'pick_date',
+				description: 'Pick a date',
+				parameters: {
+					type: 'object',
+					properties: { label: { type: 'string' } },
+					required: ['label'],
+				},
+				default_value: { date: '2026-01-01' },
+			},
+		])
+		expect(defs).toHaveLength(1)
+		expect(defs[0]).toEqual({
+			name: 'pick_date',
+			description: 'Pick a date',
+			parameters: {
+				type: 'object',
+				properties: { label: { type: 'string' } },
+				required: ['label'],
+			},
+			execution: {
+				type: 'human',
+				timeout_s: 0,
+				on_timeout: 'autopick',
+				default_value: { date: '2026-01-01' },
+			},
+		})
+		expect(defs[0].execution?.url).toBeUndefined()
+	})
+
+	it('askHumanTool is the multiple-choice convention with first-option default', () => {
+		const def = askHumanTool()
+		expect(def.name).toBe('ask_human')
+		expect(def.execution?.type).toBe('human')
+		expect(def.execution?.timeout_s).toBe(0)
+		expect(def.execution?.on_timeout).toBe('autopick')
+		const props = def.parameters?.properties as Record<string, unknown>
+		expect(props).toHaveProperty('questions')
+		expect(def.parameters?.required).toEqual(['questions'])
+	})
+
+	it('askHumanTool honours timeout overrides', () => {
+		const def = askHumanTool({ timeout_s: 120, on_timeout: 'error' })
+		expect(def.execution?.timeout_s).toBe(120)
+		expect(def.execution?.on_timeout).toBe('error')
 	})
 })
