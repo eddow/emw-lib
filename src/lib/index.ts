@@ -31,6 +31,7 @@ export type {
 	ToolRegistryEntry,
 	WFContext,
 	WFCreateSessionInput,
+	WorkflowStreamEvent,
 } from './workflows/index.js'
 export {
 	CONTROL_FLOW_TAG,

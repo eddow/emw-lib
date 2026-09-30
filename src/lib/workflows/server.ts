@@ -10,6 +10,8 @@
  * `$lib/server` or a host `db.ts` (same rule as `AuthEnv`/`AuthDb`).
  */
 
+export type { WorkflowCheckFinding, WorkflowCheckResult } from './check.js'
+export { checkWorkflow } from './check.js'
 export type {
 	CallOutcome,
 	StepErrorCode,
@@ -23,7 +25,9 @@ export {
 	hasControlFlowOutcome,
 	installSentinelRejectionGuard,
 	journalBytes,
+	normalizeDeploymentUrl,
 	tick,
+	validateStructuredAnswer,
 } from './driver.js'
 export type {
 	CreateRunInput,
@@ -38,11 +42,14 @@ export type {
 } from './journal.js'
 export {
 	appendLogbook,
+	cancelRun,
 	createRun,
 	getRun,
 	listInteractions,
+	markDeploymentGone,
 	openInteraction,
 	readMemo,
 	resolveExpiries,
+	resolveInteraction,
 	writeMemo,
 } from './journal.js'

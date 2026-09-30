@@ -48,4 +48,29 @@ describe('AppMenu', () => {
 		})
 		await expect.element(screen.getByRole('link', { name: 'Home' })).toBeVisible()
 	})
+	it('hides the auth entry when no auth prop is passed', async () => {
+		const screen = await render(AppMenuTestHost, { locales: ONE })
+		expect(screen.container.querySelector('.user-config__auth')).toBeNull()
+	})
+	it('shows a login link when anonymous with a loginHref', async () => {
+		const screen = await render(AppMenuTestHost, {
+			locales: ONE,
+			auth: { loginHref: '/login' },
+		})
+		await expect.element(screen.getByRole('link', { name: 'Log in' })).toBeVisible()
+	})
+	it('shows the user chip and signs out when signed in', async () => {
+		let signedOut = false
+		const screen = await render(AppMenuTestHost, {
+			locales: ONE,
+			auth: {
+				user: { name: 'Ada', email: 'ada@example.com' },
+				onSignOut: () => {
+					signedOut = true
+				},
+			},
+		})
+		await screen.getByRole('button', { name: /signed in as ada/i }).click()
+		expect(signedOut).toBe(true)
+	})
 })

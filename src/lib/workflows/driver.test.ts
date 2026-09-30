@@ -68,13 +68,43 @@ function fakeDb(opts: {
 				return []
 			}
 			if (text.startsWith('UPDATE workflow_interactions')) {
-				// resolveExpiries flip (no-op: fake rows never expire) or
-				// session POST-failure mark / session_id write-back.
+				// resolveExpiries flip (no-op: fake rows never expire),
+				// session POST-failure mark / session_id write-back,
+				// resolveInteraction (R5) / pre-fixed ask-human resolve.
 				// Session write-back: [sessionId, runId, idx].
 				if (text.includes('SET session_id =') && vals.length === 3) {
 					const [sessionId, , idx] = vals as [string, string, number]
 					const existing = rows.get(idx)
 					if (existing) existing.session_id = sessionId
+				}
+				// resolveInteraction: [status, outputJson|null, error|null, runId, idx].
+				if (text.includes('SET status =') && text.includes('RETURNING id, run_id')) {
+					const [status, outputJson, error, , idx] = vals as [
+						string,
+						string | null,
+						string | null,
+						string,
+						number,
+					]
+					const existing = rows.get(idx)
+					if (existing && existing.status === 'open') {
+						existing.status = status as WorkflowInteractionRow['status']
+						existing.output_json = outputJson ? JSON.parse(outputJson) : null
+						existing.error = error
+						return [{ ...existing }]
+					}
+					return []
+				}
+				// cancelRun interactions flip (workflow_interactions).
+				if (text.includes("SET status = 'cancelled'")) {
+					let n = 0
+					for (const r of rows.values()) {
+						if (r.status === 'open') {
+							r.status = 'cancelled'
+							n++
+						}
+					}
+					return Array.from({ length: n }, (_, i) => ({ id: i + 1 }))
 				}
 				return []
 			}
@@ -98,6 +128,15 @@ function fakeDb(opts: {
 					}
 				}
 				if (text.includes("status = 'waiting'")) run.status = 'waiting'
+				// cancelRun run-guard UPDATE (active-only): flips the run
+				// when still active, no-op on terminal runs.
+				if (text.includes("status = 'cancelled'")) {
+					if (run.status === 'running' || run.status === 'waiting') {
+						run.status = 'cancelled'
+						return [{ id: run.id }]
+					}
+					return []
+				}
 				return []
 			}
 			return []
@@ -188,6 +227,78 @@ describe('tick §3.1 paths', () => {
 		expect(res.status).toBe('done')
 		expect(res.returnValue).toBe('hello')
 		expect(db.run.status).toBe('done')
+	})
+
+	it('registry lookup resolves name@version; missing registration throws (7.x)', async () => {
+		expect.assertions(3)
+		const db = fakeDb({
+			run: { id: 'r-1', next_index: 0, workflow_name: 'w', workflow_version: 2 },
+		})
+		const res = await tick('r-1', {
+			sql: db.sql,
+			lookupWorkflow: (name, version) => {
+				expect(`${name}@${version}`).toBe('w@2')
+				return { fn: async () => 'via-registry' }
+			},
+		})
+		expect(res.status).toBe('done')
+		expect(res.returnValue).toBe('via-registry')
+	})
+
+	it('missing registration is a hard throw (never silent wrong-code replay)', async () => {
+		expect.assertions(1)
+		const db = fakeDb({ run: { id: 'r-1', next_index: 0 } })
+		await expect(tick('r-1', { sql: db.sql, lookupWorkflow: () => undefined })).rejects.toThrow(
+			'workflow not registered'
+		)
+	})
+
+	it('W-O mismatch is output_mismatch, never coerced done (9.2)', async () => {
+		expect.assertions(3)
+		const db = fakeDb({ run: { id: 'r-1', next_index: 0 } })
+		const stringSchema = {
+			safeParse(d: unknown) {
+				return typeof d === 'string'
+					? { success: true as const, data: d }
+					: { success: false as const, error: 'want string' }
+			},
+		}
+		const res = await tick('r-1', {
+			sql: db.sql,
+			workflowFn: async () => 42,
+			outputSchema: stringSchema,
+		})
+		expect(res.status).toBe('error')
+		expect(res.error).toBe('output_mismatch')
+		expect(db.run.status).toBe('error')
+	})
+
+	it('version_stale emits but the run continues (7.3)', async () => {
+		expect.assertions(3)
+		const events: { type: string }[] = []
+		const db = fakeDb({
+			run: { id: 'r-1', next_index: 0, deployment_url: 'https://old.vercel.app' },
+		})
+		const res = await tick('r-1', {
+			sql: db.sql,
+			workflowFn: async () => 'hello',
+			prodDeploymentUrl: 'https://new.vercel.app',
+			onEvent: (e) => events.push(e),
+		})
+		expect(res.status).toBe('done')
+		expect(events.filter((e) => e.type === 'version_stale')).toHaveLength(1)
+		// Same deployment: no staleness signal.
+		const quiet: { type: string }[] = []
+		const db2 = fakeDb({
+			run: { id: 'r-2', next_index: 0, deployment_url: 'https://same.vercel.app' },
+		})
+		await tick('r-2', {
+			sql: db2.sql,
+			workflowFn: async () => 'hello',
+			prodDeploymentUrl: 'https://same.vercel.app',
+			onEvent: (e) => quiet.push(e),
+		})
+		expect(quiet.filter((e) => e.type === 'version_stale')).toHaveLength(0)
 	})
 
 	it('first open suspends to waiting (replay hits it next tick)', async () => {
@@ -459,6 +570,80 @@ describe('once/now (4.6)', () => {
 		expect(first.opened).toHaveLength(1)
 		expect(first.opened[0].idx).toBe(0)
 	})
+
+	it('wf.now() warms through the memo loop (no too-many-misses spin)', async () => {
+		expect.assertions(3)
+		const uninstall = installSentinelRejectionGuard()
+		try {
+			const db = fakeDb({ run: { id: 'r-1', next_index: 0 } })
+			const fn = async (wf: WFContext<ToolRegistry>) => {
+				const t = wf.now()
+				const v = await (wf.use.tool as (i: unknown) => Promise<unknown>)({ q: 1 })
+				return { t, v }
+			}
+			const first = await tick('r-1', { sql: db.sql, workflowFn: fn })
+			expect(first.status).toBe('waiting')
+			expect(db.memos.has('now')).toBe(true)
+			// Resolve the tool row: replay hits the warmed `now` memo.
+			db.rows.get(0)!.status = 'resolved'
+			db.rows.get(0)!.output_json = 'ok'
+			const second = await tick('r-1', { sql: db.sql, workflowFn: fn })
+			expect(second.status).toBe('done')
+		} finally {
+			uninstall()
+		}
+	})
+
+	it('swapped expectedSchema is NonDeterminism, never silent reuse', async () => {
+		expect.assertions(3)
+		const uninstall = installSentinelRejectionGuard()
+		try {
+			const schemaA = {
+				safeParse(d: unknown) {
+					return typeof d === 'object' && d !== null
+						? { success: true as const, data: d as { n: number } }
+						: { success: false as const, error: 'want object' }
+				},
+			}
+			const schemaB = {
+				safeParse(d: unknown) {
+					return typeof d === 'string'
+						? { success: true as const, data: d as unknown as { n: number } }
+						: { success: false as const, error: 'want string' }
+				},
+			}
+			const db = fakeDb({ run: { id: 'r-1', next_index: 0 } })
+			const fnA = async (wf: WFContext<ToolRegistry>) => {
+				const s = await wf.createSession({
+					model: 'm',
+					systemPrompt: 'p',
+					initialPrompt: 'hi',
+				})
+				return s.prompt('terms', 'give me JSON', { expectedSchema: schemaA })
+			}
+			await tick('r-1', { sql: db.sql, postSession: async () => 'sess-1', workflowFn: fnA })
+			await tick('r-1', { sql: db.sql, postSession: async () => 'sess-1', workflowFn: fnA })
+			// Same presence, different shape → identity mismatch on replay.
+			const fnB = async (wf: WFContext<ToolRegistry>) => {
+				const s = await wf.createSession({
+					model: 'm',
+					systemPrompt: 'p',
+					initialPrompt: 'hi',
+				})
+				return s.prompt('terms', 'give me JSON', { expectedSchema: schemaB })
+			}
+			const res = await tick('r-1', {
+				sql: db.sql,
+				postSession: async () => 'sess-1',
+				workflowFn: fnB,
+			})
+			expect(res.status).toBe('error')
+			expect(res.error).toBe('NonDeterminism')
+			expect(db.run.status).toBe('error')
+		} finally {
+			uninstall()
+		}
+	})
 })
 
 describe('2.4 unhandledRejection guard', () => {
@@ -654,5 +839,231 @@ describe('budgets + tick timeout (2.5/6.1)', () => {
 		expect(res.status).toBe('error')
 		expect(res.error).toBe('budget_exceeded:maxWallMs')
 		expect(called).toBe(false)
+	})
+})
+
+describe('structured output + scheduling + stream + cancel (4.2/4.3/4.4/5.2/5.3/6.2)', () => {
+	const numSchema = {
+		safeParse(d: unknown) {
+			return typeof d === 'object' && d !== null && typeof (d as { n?: unknown }).n === 'number'
+				? { success: true as const, data: d as { n: number } }
+				: { success: false as const, error: 'want { n: number }' }
+		},
+	}
+
+	it('4.4: structured prompt validates on resolve; journal holds typed data', async () => {
+		expect.assertions(5)
+		const uninstall = installSentinelRejectionGuard()
+		try {
+			const db = fakeDb({ run: { id: 'r-1', next_index: 0 } })
+			const fn = async (wf: WFContext<ToolRegistry>) => {
+				const s = await wf.createSession({
+					model: 'm',
+					systemPrompt: 'p',
+					initialPrompt: 'hi',
+				})
+				return s.prompt('terms', 'give me JSON', { expectedSchema: numSchema })
+			}
+			const first = await tick('r-1', {
+				sql: db.sql,
+				postSession: async () => 'sess-1',
+				workflowFn: fn,
+			})
+			expect(first.status).toBe('waiting')
+			// Tick 1 opens the session row only (createSession suspends
+			// after POST) — the prompt opens on tick 2.
+			expect(db.rows.size).toBe(1)
+			const second = await tick('r-1', {
+				sql: db.sql,
+				postSession: async () => 'sess-1',
+				workflowFn: fn,
+			})
+			expect(second.status).toBe('waiting')
+			// Session row is idx 0, prompt row is idx 1. Resolve the
+			// prompt with a fenced answer: the ladder extracts +
+			// validates, replay returns the typed value.
+			db.rows.get(1)!.status = 'resolved'
+			db.rows.get(1)!.output_json = '```json\n{"n": 3}\n```'
+			const third = await tick('r-1', {
+				sql: db.sql,
+				postSession: async () => 'sess-1',
+				workflowFn: fn,
+			})
+			expect(third.status).toBe('done')
+			expect(third.returnValue).toEqual({ n: 3 })
+		} finally {
+			uninstall()
+		}
+	})
+
+	it('4.4: schema mismatch resolves failed → InteractionFailed is catchable', async () => {
+		expect.assertions(3)
+		const uninstall = installSentinelRejectionGuard()
+		try {
+			const db = fakeDb({ run: { id: 'r-1', next_index: 0 } })
+			const fn = async (wf: WFContext<ToolRegistry>) => {
+				const s = await wf.createSession({
+					model: 'm',
+					systemPrompt: 'p',
+					initialPrompt: 'hi',
+				})
+				try {
+					await s.prompt('terms', 'give me JSON', { expectedSchema: numSchema })
+					return 'no-fallback'
+				} catch (e) {
+					if (e instanceof InteractionFailed) return 'fallback'
+					throw e
+				}
+			}
+			// Tick 1 opens the session, tick 2 opens the prompt.
+			await tick('r-1', { sql: db.sql, postSession: async () => 'sess-1', workflowFn: fn })
+			await tick('r-1', { sql: db.sql, postSession: async () => 'sess-1', workflowFn: fn })
+			db.rows.get(1)!.status = 'resolved'
+			db.rows.get(1)!.output_json = '{"n": "not-a-number"}'
+			const second = await tick('r-1', {
+				sql: db.sql,
+				postSession: async () => 'sess-1',
+				workflowFn: fn,
+			})
+			expect(second.status).toBe('done')
+			expect(second.returnValue).toBe('fallback')
+			expect(db.run.status).toBe('done')
+		} finally {
+			uninstall()
+		}
+	})
+
+	it('4.2: wired runTool is enqueued on open (not inline); row suspends', async () => {
+		expect.assertions(4)
+		const enqueued: { tool: string; input: unknown }[] = []
+		const db = fakeDb({ run: { id: 'r-1', next_index: 0 } })
+		const res = await tick('r-1', {
+			sql: db.sql,
+			runTool: async (tool, input) => {
+				enqueued.push({ tool, input })
+			},
+			workflowFn: async (wf) => wf.use.tool({ q: 1 }),
+		})
+		expect(res.status).toBe('waiting')
+		expect(enqueued).toEqual([{ tool: 'tool', input: { q: 1 } }])
+		expect(db.rows.size).toBe(1)
+		expect(db.rows.get(0)!.status).toBe('open')
+	})
+
+	it('4.3: pre-fixed ask-human resolves at open with no stream event', async () => {
+		expect.assertions(4)
+		const events: unknown[] = []
+		const db = fakeDb({ run: { id: 'r-1', next_index: 0 } })
+		const res = await tick('r-1', {
+			sql: db.sql,
+			prefixedAnswers: { confirm: 'yes' },
+			onEvent: (e) => {
+				if (e.type !== 'interaction_opened') events.push(e)
+			},
+			workflowFn: async (wf: WFContext<ToolRegistry>) =>
+				(wf.use['ask-human'] as (i: unknown, o?: { label?: string }) => Promise<unknown>)(
+					{ question: 'go?' },
+					{ label: 'confirm' }
+				),
+		})
+		expect(res.status).toBe('done')
+		expect(res.returnValue).toBe('yes')
+		expect(db.rows.get(0)!.status).toBe('resolved')
+		// The open committed (idx consumed) but published no
+		// `interaction_opened` event (only `run_status: done`).
+		expect(events).toEqual([{ type: 'run_status', status: 'done' }])
+	})
+
+	it('5.2: opens emit interaction_opened; tick end emits run_status', async () => {
+		expect.assertions(6)
+		const events: { type: string; idx?: number; kind?: string; status?: string }[] = []
+		const db = fakeDb({ run: { id: 'r-1', next_index: 0 } })
+		const res = await tick('r-1', {
+			sql: db.sql,
+			onEvent: (e) => events.push(e as { type: string; idx?: number; status?: string }),
+			workflowFn: async (wf) => wf.use.tool({ q: 1 }),
+		})
+		expect(res.status).toBe('waiting')
+		expect(events.filter((e) => e.type === 'interaction_opened')).toHaveLength(1)
+		expect(events[events.length - 1]).toMatchObject({ type: 'run_status', status: 'waiting' })
+		// Prompt + session opens emit too (R4 — FE renders from label_text alone).
+		const uninstall = installSentinelRejectionGuard()
+		try {
+			const db2 = fakeDb({ run: { id: 'r-2', next_index: 0 } })
+			const kinds: string[] = []
+			const sessionFn = async (wf: WFContext<ToolRegistry>) => {
+				const s = await wf.createSession({
+					model: 'm',
+					systemPrompt: 'p',
+					initialPrompt: 'hi',
+				})
+				await s.prompt('q', 'hello?')
+				return 'never'
+			}
+			const t1 = await tick('r-2', {
+				sql: db2.sql,
+				postSession: async () => 'sess-1',
+				onEvent: (e) => {
+					if (e.type === 'interaction_opened') kinds.push(e.kind)
+				},
+				workflowFn: sessionFn,
+			})
+			expect(t1.status).toBe('waiting')
+			// Tick 1 opens the session row only (createSession suspends
+			// after POST); tick 2 opens the prompt row.
+			const t2 = await tick('r-2', {
+				sql: db2.sql,
+				postSession: async () => 'sess-1',
+				onEvent: (e) => {
+					if (e.type === 'interaction_opened') kinds.push(e.kind)
+				},
+				workflowFn: sessionFn,
+			})
+			expect(t2.status).toBe('waiting')
+			expect(kinds).toEqual(['session', 'prompt'])
+		} finally {
+			uninstall()
+		}
+	})
+
+	it('5.3: resolveInteraction guards open-only; double resolve is a no-op', async () => {
+		expect.assertions(3)
+		const { resolveInteraction } = await import('./journal.js')
+		const open = row(0, { kind: 'tool', status: 'open' })
+		const db = fakeDb({ run: { id: 'r-1', next_index: 1 }, rows: [open] })
+		const first = await resolveInteraction(
+			'r-1',
+			0,
+			{ status: 'resolved', output: { ok: true } },
+			db.sql
+		)
+		expect(first?.status).toBe('resolved')
+		const second = await resolveInteraction('r-1', 0, { status: 'failed', error: 'late' }, db.sql)
+		expect(second).toBeNull()
+		expect(db.rows.get(0)!.status).toBe('resolved')
+	})
+
+	it('6.2: cancelRun flips opens + run to cancelled, journal preserved', async () => {
+		expect.assertions(6)
+		const { cancelRun } = await import('./journal.js')
+		const open = row(0, { kind: 'tool', status: 'open' })
+		const db = fakeDb({ run: { id: 'r-1', next_index: 1 }, rows: [open] })
+		expect(await cancelRun('r-1', db.sql)).toBe(1)
+		expect(db.rows.get(0)!.status).toBe('cancelled')
+		expect(db.run.status).toBe('cancelled')
+		// Terminal cancelled short-circuits without re-executing.
+		let called = false
+		const res = await tick('r-1', {
+			sql: db.sql,
+			workflowFn: async () => {
+				called = true
+				return 'never'
+			},
+		})
+		expect(res.status).toBe('cancelled')
+		expect(called).toBe(false)
+		// Terminal-guarded: cancelling a done run is a no-op (0, journal untouched).
+		db.run.status = 'done'
+		expect(await cancelRun('r-1', db.sql)).toBe(0)
 	})
 })

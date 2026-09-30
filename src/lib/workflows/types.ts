@@ -130,6 +130,43 @@ export interface DescribeStepArgs {
 }
 
 /**
+ * Workflow stream events (specs §3.5, checklist 5.2). The FE renders
+ * progress from `label_text` alone (`label` is the future i18n key;
+ * machine consumers read `kind`/`tool`). Client-safe so the FE can
+ * import them from `emw-lib`.
+ *
+ * Ownership: the tick driver emits `interaction_opened`, terminal
+ * `run_status` and `version_stale` (7.3); the resolver/host transport
+ * emits `interaction_resolved`, `human_*` and `log`.
+ */
+export type WorkflowStreamEvent =
+	/** One per committed open (R4). Prefilled rows (§5, `-y`) emit none. */
+	| {
+			type: 'interaction_opened'
+			idx: number
+			kind: 'prompt' | 'tool' | 'session'
+			tool?: string
+			label: string
+			label_text: string
+	  }
+	/** Emitted by the resolver (host) when a row leaves `open` (R5). */
+	| {
+			type: 'interaction_resolved'
+			idx: number
+			status: 'resolved' | 'failed' | 'cancelled' | 'expired'
+	  }
+	/** Emitted on every tick end; `cancelled` is distinct from `error` (§7). */
+	| { type: 'run_status'; status: 'running' | 'waiting' | 'done' | 'error' | 'cancelled' }
+	/** `ask-human` open payload, verbatim (same answer endpoint as Alfred). */
+	| { type: 'human_question'; question: unknown }
+	/** `ask-human` resolve payload, verbatim. */
+	| { type: 'human_answer'; answer: unknown }
+	/** Pinned deployment is stale (§8); the run continues. */
+	| { type: 'version_stale'; deployment_url: string; opened_at: string }
+	/** Persisted `wf.log` lines only (§3.4 — replay emissions never stream). */
+	| { type: 'log'; tick: number; seq: number; message: string }
+
+/**
  * Pure display-text function: one canonical English sentence per call site.
  * Display-only — never part of replay identity.
  */

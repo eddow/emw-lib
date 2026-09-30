@@ -30,6 +30,41 @@ export interface ChatMessage {
 	/** Reasoning content — the UI hides it unless `showThought`. */
 	thought?: boolean
 	/**
+	 * Render kind (plan `plans/ChatOutput.md` §1–2). Defaults to `'message'`
+	 * when omitted (backwards compatible with pre-shape callers):
+	 * - `tool_call`: paired `tool_use`→`tool_result` (or pending `tool_use`);
+	 *   one-line summary in `text`, full args/output in `tool`.
+	 * - `thought`: settled or live reasoning (also sets `thought: true`).
+	 * - `status`: terminal `done/superseded|archived` one-liner, no retry.
+	 * - `retry`: `done/max_iterations` or `error` — expandable box with a
+	 *   Keep/Try-again button; `retryAfterS` triggers the 🐌 countdown.
+	 */
+	kind?: 'message' | 'tool_call' | 'thought' | 'status' | 'retry'
+	/** Structured tool-call payload (`kind: 'tool_call'`). */
+	tool?: {
+		toolCallId: string
+		toolName: string
+		/** Raw arguments (stringified) for the `<details>` view. */
+		argsText?: string
+		/** Raw output/error for the `<details>` view. */
+		outputText?: string
+		/** False once the `tool_result` arrived (settled → collapsed). */
+		pending: boolean
+	}
+	/** Terminal status reason (`kind: 'status'`). */
+	status?: {
+		reason: 'superseded' | 'archived'
+	}
+	/** Retryable terminal (`kind: 'retry'`). */
+	retry?: {
+		/** `max_iterations` for `done`, otherwise the error text. */
+		reason: 'max_iterations' | 'error'
+		/** Full error text for the `<details>` view. */
+		errorText: string
+		/** Parsed "wait N seconds then try again" hint (snail countdown). */
+		retryAfterS?: number
+	}
+	/**
 	 * Structured human-tool payload for the FE-registered renderer.
 	 * Present on `role: 'human'` messages: the `human_question` carries the
 	 * question (tool name + arguments/questions), the `human_answer` the
@@ -94,6 +129,31 @@ function payloadText(payload: unknown): string {
 	return stringify(payload)
 }
 
+/** First line of `s`, trimmed and truncated to `max` chars (for one-liners). */
+function oneLine(s: string, max = 80): string {
+	const line = s.split('\n').map((l) => l.trim()).find((l) => l !== '') ?? ''
+	if (line.length <= max) return line
+	return `${line.slice(0, max - 1).trimEnd()}…`
+}
+
+/** One-line summary for a tool call: `name — first line of args`. */
+function toolSummary(name: string, argsText: string): string {
+	const summary = oneLine(argsText)
+	return summary ? `${name} — ${summary}` : name
+}
+
+/**
+ * Parse an explicit "wait N seconds then try again" hint (rate-limit style)
+ * from error text. Returns the wait in seconds, or `undefined` when the
+ * payload carries no such hint (→ no blind auto-retry, plan §1.2).
+ */
+export function parseRetryAfterS(text: string): number | undefined {
+	const m = /wait\s+(\d+)\s*(?:seconds?|secs?)\b/i.exec(text)
+	if (!m) return undefined
+	const n = Number.parseInt(m[1] ?? '', 10)
+	return Number.isFinite(n) && n > 0 ? n : undefined
+}
+
 /** Map one durable event to a message; `null` when it renders nothing. */
 export function eventMessage(
 	type: string,
@@ -108,17 +168,37 @@ export function eventMessage(
 		}
 		case 'thought': {
 			const text = payloadText(payload)
-			return text ? { id, role: 'assistant', thought: true, text, seq } : null
+			return text ? { id, role: 'assistant', thought: true, text, seq, kind: 'thought' } : null
 		}
 		case 'tool_use': {
 			const p = (payload ?? {}) as Record<string, unknown>
 			const name = typeof p.name === 'string' ? p.name : 'tool'
-			return { id, role: 'tool', text: `${name}: ${stringify(p.arguments)}`, seq }
+			const toolCallId = typeof p.tool_call_id === 'string' ? p.tool_call_id : id
+			const argsText = stringify(p.arguments)
+			return {
+				id,
+				role: 'tool',
+				text: toolSummary(name, argsText),
+				seq,
+				kind: 'tool_call',
+				pending: true,
+				tool: { toolCallId, toolName: name, argsText, pending: true },
+			}
 		}
 		case 'tool_result': {
 			const p = (payload ?? {}) as Record<string, unknown>
-			const text = 'output' in p ? stringify(p.output) : stringify(p.error)
-			return text ? { id, role: 'tool', text, seq } : null
+			const name = typeof p.name === 'string' ? p.name : 'tool'
+			const toolCallId = typeof p.tool_call_id === 'string' ? p.tool_call_id : id
+			const outputText = 'output' in p ? stringify(p.output) : stringify(p.error)
+			if (!outputText) return null
+			return {
+				id,
+				role: 'tool',
+				text: toolSummary(name, outputText),
+				seq,
+				kind: 'tool_call',
+				tool: { toolCallId, toolName: name, outputText, pending: false },
+			}
 		}
 		case 'human_question': {
 			const p = (payload ?? {}) as Partial<HumanQuestionPayload>
@@ -181,11 +261,46 @@ export function eventMessage(
 				},
 			}
 		}
-		case 'done':
-			return { id, role: 'system', text: `done: ${payloadText(payload) || 'stop'}`, seq }
+		case 'done': {
+			const reason = payloadText(payload) || 'stop'
+			// `stop` renders nothing (plan §1.2).
+			if (reason === 'stop') return null
+			if (reason === 'superseded' || reason === 'archived') {
+				return {
+					id,
+					role: 'system',
+					text: reason,
+					seq,
+					kind: 'status',
+					status: { reason },
+				}
+			}
+			// `max_iterations` (and any unknown reason) → retry box.
+			const text = `stopped early: ${reason}`
+			return {
+				id,
+				role: 'system',
+				text,
+				seq,
+				kind: 'retry',
+				retry: { reason: 'max_iterations', errorText: text },
+			}
+		}
 		case 'error': {
-			const text = payloadText(payload)
-			return { id, role: 'system', text: text ? `error: ${text}` : 'error', seq }
+			const text = payloadText(payload) || 'error'
+			const retryAfterS = parseRetryAfterS(text)
+			return {
+				id,
+				role: 'system',
+				text: oneLine(text),
+				seq,
+				kind: 'retry',
+				retry: {
+					reason: 'error',
+					errorText: text,
+					...(retryAfterS !== undefined ? { retryAfterS } : {}),
+				},
+			}
 		}
 		default:
 			return { id, role: 'system', text: `[${type}] ${payloadText(payload)}`, seq }
@@ -195,7 +310,8 @@ export function eventMessage(
 /**
  * Render durable history (`message` + `event` items, never deltas) as messages.
  * Message and event `seq` spaces are independent (`butler/alfred.md` §6), so
- * ids use the item index, not `seq`.
+ * ids use the item index, not `seq`. `tool_use`→`tool_result` pairs (by
+ * `tool_call_id`) are merged into a single `tool_call` message.
  */
 export function historyToMessages(history: HistoryItem[]): ChatMessage[] {
 	const out: ChatMessage[] = []
@@ -212,6 +328,45 @@ export function historyToMessages(history: HistoryItem[]): ChatMessage[] {
 			if (msg) out.push(msg)
 		}
 	})
+	return pairToolCalls(out)
+}
+
+/**
+ * Merge `tool_use` (pending, args only) with its later `tool_result` (output
+ * only) by `tool_call_id` into one settled `tool_call` message. Keeps the
+ * `tool_use` id; drops the standalone result. Idempotent — already-merged
+ * messages (both texts, `pending: false`) pass through untouched.
+ */
+function pairToolCalls(messages: ChatMessage[]): ChatMessage[] {
+	const pendingByCall = new Map<string, ChatMessage>()
+	const out: ChatMessage[] = []
+	for (const msg of messages) {
+		if (msg.kind === 'tool_call' && msg.tool) {
+			if (msg.tool.pending) {
+				pendingByCall.set(msg.tool.toolCallId, msg)
+				out.push(msg)
+			} else if (!msg.tool.argsText) {
+				const use = pendingByCall.get(msg.tool.toolCallId)
+				if (use?.tool) {
+					use.tool.outputText = msg.tool.outputText
+					use.tool.pending = false
+					use.pending = false
+					use.text = toolSummary(
+						use.tool.toolName,
+						msg.tool.outputText ?? use.tool.argsText ?? ''
+					)
+					pendingByCall.delete(msg.tool.toolCallId)
+					// Standalone result consumed — not pushed.
+				} else {
+					out.push(msg)
+				}
+			} else {
+				out.push(msg)
+			}
+		} else {
+			out.push(msg)
+		}
+	}
 	return out
 }
 
@@ -229,7 +384,7 @@ export function eventsToMessages(events: LiveEvent[]): ChatMessage[] {
 		const msg = eventMessage(evt.type, (evt as DurableEvent).payload, `e-${i}`, evt.seq)
 		if (msg) out.push(msg)
 	})
-	return out
+	return pairToolCalls(out)
 }
 
 /**
@@ -241,7 +396,8 @@ export function buildTranscript(
 	events: LiveEvent[],
 	streaming?: StreamingDraft
 ): ChatMessage[] {
-	const out = [...historyToMessages(history), ...eventsToMessages(events)]
+	const settled = pairToolCalls([...historyToMessages(history), ...eventsToMessages(events)])
+	const out = [...settled]
 	if (streaming?.showThought && streaming.thought) {
 		out.push({
 			id: 'streaming-thought',
@@ -249,6 +405,7 @@ export function buildTranscript(
 			thought: true,
 			text: streaming.thought,
 			pending: true,
+			kind: 'thought',
 		})
 	}
 	if (streaming?.text) {

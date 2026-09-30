@@ -14,14 +14,17 @@ lib (its DB *is* the domain).
 - `server.ts` (server-only `./auth-server`): `readAuthEnv(raw)`
   (raw `AUTH_*` record → `AuthEnv` — the one place that knows the env
   naming), `createAuth(env, db)` (better-auth + `admin` plugin +
-  `role`/`locale`/`theme` `additionalFields`), `populateLocals(auth, event)`,
+  `role`/`locale`/`theme` `additionalFields`, `basePath: '/auth'`,
+  `trustedOrigins` from `AUTH_TRUSTED_ORIGINS`), `populateLocals(auth, event)`,
   `resolveSession()`, `parseRoles()`/`serializeRoles()`,
   `enabledProviderIds()`, `effectiveAllowlist(env)` — the single source
   of truth for what the login UI offers: a provider appears iff its
   `AUTH_<ID>_{ID,SECRET}` pair is present, intersected with
   `AUTH_ENABLED_PROVIDERS` when set (unset = auto: `email` + every
   configured social provider).
-- `LoginScreen.svelte` (+ `AuthClient` facade): email/password sign-in,
+- `LoginScreen.svelte` (+ `AuthClient` facade): shadcn-shaped card
+  (self-contained styles reading the host's `--card`/`--primary`/…
+  palette with neutral fallbacks), email/password sign-in,
   registration, lost-password (request + `?token=` confirm), "Log in
   with…" social buttons. The host passes a facade over
   `better-auth/svelte` — the component never imports better-auth
@@ -37,19 +40,25 @@ lib (its DB *is* the domain).
 2. `src/lib/server/auth.ts`: `createAuth(readAuthEnv(env), { database: pool })`
    (`pg.Pool` on `DATABASE_URL`; `readAuthEnv` centralizes the whole
    `AUTH_*` mapping — hosts never map vars by hand).
-3. `src/lib/auth-client.ts`: `createAuthClient({ baseURL })` +
+3. `src/lib/auth-client.ts`: `createAuthClient({ baseURL, basePath: '/auth' })` +
    `adminClient()`.
 4. `src/routes/login/+page.svelte` + `+page.server.ts`: server `load`
    returns `effectiveAllowlist(readAuthEnv(env))` (same mapping as the
    backend — only the id list reaches the browser);
    `<LoginScreen client={facade} allowlist={data.allowlist} />`.
-5. `src/routes/api/auth/[...all]/+server.ts`: `auth.handler(request)`.
+5. `src/routes/auth/[...all]/+server.ts`: `auth.handler(request)`.
+   Accept-header routing (no `/api/` prefix): SvelteKit serves HTML for
+   `Accept: text/html` page loads and JSON for `fetch` calls on the same
+   path, so a dedicated `/api/` namespace is unnecessary. Server
+   `basePath: '/auth'` and client `basePath: '/auth'` must agree.
 6. `src/hooks.server.ts`: `sequence(handleAuth, handleParaglide)` where
    `handleAuth` = `populateLocals(auth, event)` + `svelteKitHandler(...)`.
 7. `src/app.d.ts`: `Locals { user, session, roles, locale, theme }`.
 8. `.env.example`: `DATABASE_URL`, `AUTH_SECRET`, `PUBLIC_BASE_URL`,
    `AUTH_ENABLED_PROVIDERS` (optional — unset = auto-detect from
-   present `AUTH_*` secrets), `AUTH_<PROVIDER>_{ID,SECRET}`,
+   present `AUTH_*` secrets), `AUTH_TRUSTED_ORIGINS` (comma-separated
+   extra origins — set to the prod URL on Vercel, otherwise POSTs
+   fail with 403 `INVALID_ORIGIN`), `AUTH_<PROVIDER>_{ID,SECRET}`,
    `RESEND_API_KEY`. No `PUBLIC_*` mirror needed: the login `load`
    computes the UI list server-side.
 

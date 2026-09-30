@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
 	appendLogbook,
+	cancelRun,
 	createRun,
 	getRun,
 	listInteractions,
 	openInteraction,
 	readMemo,
 	resolveExpiries,
+	resolveInteraction,
 	writeMemo,
 } from './journal'
 
@@ -135,6 +137,44 @@ describe('resolveExpiries', () => {
 	})
 })
 
+describe('resolveInteraction (R5)', () => {
+	it('resolves an open row; the open-only guard is in the SQL', async () => {
+		expect.assertions(3)
+		const resolved = { id: 1, run_id: 'r-1', idx: 0, status: 'resolved', output_json: { ok: true } }
+		const { sql, queries } = fakeSql({ UPDATE: [resolved] })
+		expect(
+			await resolveInteraction('r-1', 0, { status: 'resolved', output: { ok: true } }, sql)
+		).toEqual(resolved)
+		expect(queries[0]).toContain("AND status = 'open'")
+		expect(queries[0]).toContain('RETURNING id, run_id')
+	})
+
+	it('second resolve returns null (guard, never silent overwrite)', async () => {
+		expect.assertions(2)
+		const { sql, queries } = fakeSql({ UPDATE: [] })
+		expect(await resolveInteraction('r-1', 0, { status: 'failed', error: 'late' }, sql)).toBeNull()
+		expect(queries[0]).toContain("AND status = 'open'")
+	})
+})
+
+describe('cancelRun (6.2)', () => {
+	it('flips open rows + run to cancelled, returns the flipped count', async () => {
+		expect.assertions(3)
+		const { sql, queries } = fakeSql({ UPDATE: [{ id: 1 }, { id: 2 }] })
+		expect(await cancelRun('r-1', sql)).toBe(2)
+		expect(queries[0]).toContain("SET status = 'cancelled'")
+		expect(queries[1]).toContain("SET status = 'cancelled'")
+	})
+
+	it('is a no-op on a terminal run (never rewrites done/error)', async () => {
+		expect.assertions(2)
+		// Run-guard UPDATE returns [] (terminal) → 0, journal untouched.
+		const { sql, queries } = fakeSql({ UPDATE: [] })
+		expect(await cancelRun('r-1', sql)).toBe(0)
+		expect(queries).toHaveLength(1)
+	})
+})
+
 describe('memo read/write', () => {
 	it('writeMemo returns the inserted row; readMemo hits it', async () => {
 		expect.assertions(2)
@@ -198,5 +238,19 @@ describe('createRun', () => {
 			createRun({ workflowName: 'w', workflowVersion: 1, deploymentUrl: '' }, sql)
 		).rejects.toThrow('"deploymentUrl" is required')
 		expect(queries).toHaveLength(0)
+	})
+})
+
+describe('markDeploymentGone (7.4)', () => {
+	it('marks an active run error(deployment_gone), terminal-guarded', async () => {
+		expect.assertions(4)
+		const { markDeploymentGone } = await import('./journal.js')
+		const { sql, queries } = fakeSql({ UPDATE: [{ id: 'r-1' }] })
+		expect(await markDeploymentGone('r-1', sql)).toBe(true)
+		expect(queries[0]).toContain("error = 'deployment_gone'")
+		expect(queries[0]).toContain("status IN ('running', 'waiting')")
+		// Terminal run: guard returns [] → false, journal untouched.
+		const terminal = fakeSql({ UPDATE: [] })
+		expect(await markDeploymentGone('r-1', terminal.sql)).toBe(false)
 	})
 })

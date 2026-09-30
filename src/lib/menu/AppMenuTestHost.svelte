@@ -1,16 +1,18 @@
 <script lang="ts">
 	import AppMenu from './AppMenu.svelte'
-	import type { LocaleOption, NavItem } from './types.js'
+	import type { LocaleOption, MenuAuthState, NavItem } from './types.js'
 
 	let {
 		nav = [],
 		locales = [],
-		showTheme = true
+		showTheme = true,
+		auth = null
 	}: {
 		nav?: NavItem[]
 		locales?: LocaleOption[]
 		showTheme?: boolean
+		auth?: MenuAuthState | null
 	} = $props()
 </script>
 
-<AppMenu {nav} {locales} {showTheme} />
+<AppMenu {nav} {locales} {showTheme} {auth} />

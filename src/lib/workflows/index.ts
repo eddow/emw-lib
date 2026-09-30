@@ -5,6 +5,8 @@
  * explicit so future collisions stay visible.
  */
 
+export type { WorkflowCheckFinding, WorkflowCheckResult } from './check.js'
+export { checkWorkflow } from './check.js'
 export type {
 	AsyncWorkflowDef,
 	AsyncWorkflowMeta,
@@ -31,6 +33,7 @@ export type {
 	ToolRegistryEntry,
 	WFContext,
 	WFCreateSessionInput,
+	WorkflowStreamEvent,
 } from './types.js'
 export {
 	CONTROL_FLOW_TAG,

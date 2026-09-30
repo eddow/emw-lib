@@ -1,7 +1,7 @@
 # wf-creation — how to write an asyncWF workflow
 
-Agent-targeted. Read `specs.md` for the full model; this file is the
-checklist. One workflow = one async function.
+Agent-targeted. Self-contained with `README.md` in this folder: no other
+file needed. One workflow = one async function.
 
 ---
 
@@ -12,7 +12,7 @@ export type WFInput = { /* W-I */ };
 export type WFOutput = /* W-O */;
 
 export async function myWorkflow(
-  { createSession, all, use, parseJson, log }: WFContext,
+  { createSession, all, use, once, now, parseJson, log }: WFContext,
   input: WFInput,
 ): Promise<WFOutput> { ... }
 ```
@@ -22,16 +22,18 @@ export async function myWorkflow(
   every tick — keep it pure.
 - Return the W-O value. Every code path must `return` or `throw`.
 
-## 2. Declare schemas once (zod)
+## 2. Declare schemas once (`SchemaLike`)
 
 ```ts
+// zod host: z.ZodType<T> satisfies SchemaLike<T> structurally.
 const Terms = z.array(z.object({ language: z.string(), terms: z.array(z.string()) }));
 type Terms = z.infer<typeof Terms>;
 ```
 
-- The zod schema is the single source of truth: it validates the answer
-  **and** is exported to JSON Schema for the prompt via
-  `z.toJSONSchema(Terms)`.
+- The schema is the single source of truth: it validates the answer
+  **and** is exported as JSON Schema for the prompt (zod hosts: via
+  `z.toJSONSchema(Terms)`; zod-free hosts: hand-roll `{ safeParse }` +
+  a `jsonSchema` object — see `marketAnalysis.ts`).
 - Declare tool payload types in the `ToolRegistry` (one place).
 
 ## 3. Call sites
@@ -47,9 +49,14 @@ type Terms = z.infer<typeof Terms>;
 | Progress line | `log('message', data?)` |
 
 - Embed the schema in the prompt text:
-  `JSON.stringify(z.toJSONSchema(Terms))`.
+  `JSON.stringify(z.toJSONSchema(Terms))` (zod) or the hand-rolled
+  `jsonSchema` object.
 - `label` is a stable debug/i18n key (`'terms'`, `'rank'`, `'summary'`).
   Not unique; identity is the call index.
+- Non-determinism has one escape hatch: `once('key', () => …)` journals
+  the value (replay returns it; source change is a step error) and
+  `now()` is `once('now', () => Date.now())`. Clock/randomness inside
+  `once` only.
 
 ## 4. Rules (violations are step errors)
 
@@ -57,9 +64,10 @@ type Terms = z.infer<typeof Terms>;
 2. **One live `prompt` per session.** `await` the first answer before
    opening the second on the same session. Different sessions parallelize.
 3. **Deterministic.** No `Date.now()`, `Math.random()`, `fetch`, ambient
-   I/O. Clock/randomness/HTTP go through `use.*` so they are journaled.
-   Pure compute (`sort`, `slice`, `filter`, `flatMap`, `JSON.parse`,
-   `safeParse`) is free.
+   I/O outside `once` (checked by `checkWorkflow`). Clock/randomness go
+   inside `once('key', () => …)` so they journal; HTTP goes through
+   `use.*`. Pure compute (`sort`, `slice`, `filter`, `flatMap`,
+   `JSON.parse`, `safeParse`) is free.
 4. **Always `await`** every `use.*` / `session.prompt` (directly or via
    `all`). A floating handle is an unhandled rejection.
 
@@ -95,16 +103,24 @@ keys translations on `label`.
 ## 8. Checklist before submitting
 
 - [ ] W-I / W-O types exported; every path returns W-O.
-- [ ] Every schema declared once (zod); `z.toJSONSchema` used in prompts.
+- [ ] Every schema declared once (`SchemaLike`); JSON Schema embedded in prompts.
 - [ ] Tool names exist in `ToolRegistry`; payloads typed.
-- [ ] No `Date`/`Math.random`/`fetch`/ambient I/O.
+- [ ] No `Date`/`Math.random`/`fetch`/ambient I/O outside `once`.
 - [ ] Every `use.*` / `prompt` awaited.
 - [ ] No two live prompts on one session.
-- [ ] `catch` blocks rethrow control-flow sentinels.
-- [ ] `describeStep` exported and pure.
+- [ ] `catch` blocks rethrow control-flow sentinels (`isControlFlow`).
+- [ ] `describeStep` exported and pure; `outputSchema` registered for W-O.
 - [ ] Labels are stable, human-readable keys.
+- [ ] `checkWorkflow(src)` clean.
 
 ## 9. Reference
 
-`example1.ts` in this folder is the worked example (marketplace analysis):
-fan-out, structured prompts, pure pipelines, and a `parseJson` variant.
+- Worked examples: `arb2b/src/lib/server/workflows/marketAnalysis.ts`
+  (linear: fan-out, structured prompts, pure pipelines, `parseJson`
+  variant) and `triagePages.ts` (branching + looping + per-element
+  fallback + early return + `once` checkpoint).
+- Registration: `defineAsyncWorkflow(fn, { name, version, describeStep,
+  outputSchema? })` — duplicate `name@version` throws. The tick
+  validates the return value against `outputSchema` before `done`.
+- Static checks: `checkWorkflow(src)` (exhaustiveness + determinism).
+  Host wiring (starter, tick route, pinning): `README.md` in this folder.

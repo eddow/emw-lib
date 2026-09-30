@@ -7,7 +7,7 @@
  * the definition by name + version and re-executes `fn` every tick.
  */
 
-import type { DescribeStepFn, ToolRegistry, WFContext } from './types.js'
+import type { DescribeStepFn, SchemaLike, ToolRegistry, WFContext } from './types.js'
 
 /** A registered async workflow definition. */
 export interface AsyncWorkflowDef<
@@ -19,6 +19,12 @@ export interface AsyncWorkflowDef<
 	readonly version: number
 	readonly fn: (wf: WFContext<R>, input: W_I) => Promise<W_O>
 	readonly describeStep: DescribeStepFn
+	/**
+	 * W-O return-value schema (specs §3.1, checklist 9.2): the tick
+	 * validates the workflow's return value before persisting `done`.
+	 * Optional — unregistered-output workflows skip the check.
+	 */
+	readonly outputSchema?: SchemaLike<unknown>
 }
 
 /** Meta carried beside the function (name + version + display text). */
@@ -26,6 +32,8 @@ export interface AsyncWorkflowMeta {
 	name: string
 	version: number
 	describeStep: DescribeStepFn
+	/** W-O return-value schema (validated before `done` is persisted). */
+	outputSchema?: SchemaLike<unknown>
 }
 
 const registry = new Map<string, AsyncWorkflowDef<unknown, unknown, ToolRegistry>>()
@@ -53,6 +61,7 @@ export function defineAsyncWorkflow<W_I, W_O, R extends ToolRegistry = ToolRegis
 		version: meta.version,
 		fn,
 		describeStep: meta.describeStep,
+		outputSchema: meta.outputSchema,
 	}
 	registry.set(key, def as unknown as AsyncWorkflowDef<unknown, unknown, ToolRegistry>)
 	return def

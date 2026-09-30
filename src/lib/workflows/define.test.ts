@@ -95,4 +95,33 @@ describe('defineAsyncWorkflow', () => {
 		expect(getAsyncWorkflow('marketplaceAnalysis', 1)).toBeUndefined()
 		expect(listAsyncWorkflows()).toHaveLength(0)
 	})
+
+	it('carries outputSchema for the tick W-O check (9.2)', () => {
+		expect.assertions(3)
+		clearAsyncWorkflows()
+		const outputSchema = {
+			safeParse(data: unknown) {
+				return typeof data === 'string'
+					? { success: true as const, data }
+					: { success: false as const, error: 'want string' }
+			},
+		}
+		const def = defineAsyncWorkflow(marketplaceAnalysis, {
+			name: 'marketplaceAnalysis',
+			version: 1,
+			describeStep: ({ label }) => `Step ${label}`,
+			outputSchema,
+		})
+		expect(def.outputSchema).toBe(outputSchema)
+		expect(getAsyncWorkflow('marketplaceAnalysis', 1)?.outputSchema).toBe(outputSchema)
+		// Absent without the meta key (unregistered-output workflows skip the check).
+		clearAsyncWorkflows()
+		const bare = defineAsyncWorkflow(marketplaceAnalysis, {
+			name: 'marketplaceAnalysis',
+			version: 1,
+			describeStep: ({ label }) => `Step ${label}`,
+		})
+		expect(bare.outputSchema).toBeUndefined()
+		clearAsyncWorkflows()
+	})
 })

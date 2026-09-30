@@ -2,13 +2,14 @@
 
 One workflow = one async function. `await` points are step boundaries;
 ticks replay the function from the journal and suspend at the first open
-interaction. Full model: `plans/asyncWF/specs.md`.
+interaction. This file + `wf-creation.md` are self-contained: an agent can
+write, register, wire and check a workflow from these two files alone.
 
 ## Authoring
 
 ```ts
 export async function myWorkflow(
-  { createSession, all, use, once, parseJson, log }: WFContext,
+  { createSession, all, use, once, now, parseJson, log }: WFContext,
   input: WFInput,
 ): Promise<WFOutput> { ... }
 ```
@@ -24,8 +25,11 @@ export async function myWorkflow(
 | Prose+JSON answer | `parseJson(raw, S)` (pure; `ParseError` on failure) |
 | Progress line | `log('message', data?)` |
 
-- Schemas are zod, declared once: embedded in the prompt via
-  `z.toJSONSchema(S)`, validated on resolve. Same source of truth.
+- Schemas are `SchemaLike` (`{ safeParse }`), declared once: embedded in
+  the prompt as JSON Schema, validated on resolve. Same source of truth.
+  zod satisfies `SchemaLike` structurally (`z.ZodType<T>`), so zod hosts
+  pass their schemas directly and embed via `z.toJSONSchema(S)`; zod-free
+  hosts hand-roll the contract (see `marketAnalysis.ts`).
 - `label` is a stable debug/i18n key (`'terms'`, `'rank'`). Identity is
   the call index, not the label.
 - W-I sessions arrive as `Session` objects; workflow code never sees a uuid.
@@ -86,14 +90,80 @@ generation-stream shape (SSE + `poll`, `after_seq` replay).
 | File | What |
 |---|---|
 | `types.ts` | `ToolFn`, `ToolRegistry`, `ToolFns`, `Session`, `WFContext`, `DescribeStepArgs`, `ParseError`, `InteractionFailed`, `isControlFlow` |
-| `index.ts` | Barrel (explicit names — `FetchFn` collision rule) |
+| `index.ts` | Client-safe barrel (explicit names — `FetchFn` collision rule) |
+| `server.ts` | Server-only barrel (`emw-lib/workflows-server`): driver + journal + checks |
+| `define.ts` | `defineAsyncWorkflow(fn, meta)` → `{ name, version, fn, describeStep, outputSchema? }` |
+| `driver.ts` | `tick(runId, deps)` — replay/suspend core, budgets, cancel, staleness |
+| `journal.ts` | `openInteraction` (atomic TX), `resolveInteraction` (open-only), `resolveExpiries`, `cancelRun`, `markDeploymentGone`, memos, logbook |
 | `parseJson.ts` | Extraction ladder (clean → fences → balanced-extract → `safeParse`) |
-| `describe.ts` | `describeStep` contract helpers (optional) |
+| `memo.ts` | `fnSourceHash` / `stableStringify` / `payloadHash` |
+| `check.ts` | `checkWorkflow(src)` — exhaustiveness (9.2) + determinism (9.3) lints |
 
 ## Rules for contributors
 
-- Client-safe: no `node:` imports, no env reads in `types.ts`/`parseJson.ts`.
-- `defineAsyncWorkflow(fn, meta)` registers `{ name, version, fn, describeStep }`.
-- Workflow files: no `Date`/`Math.random`/`fetch`/DB imports outside `once`
-  (linted); every path returns W-O (linted).
+- Client-safe: no `node:` imports, no env reads in `types.ts`/`parseJson.ts`/`memo.ts`/`check.ts`/`define.ts`.
+- `defineAsyncWorkflow(fn, meta)` registers `{ name, version, fn, describeStep, outputSchema? }`. Duplicate `name@version` throws.
+- Workflow files: `checkWorkflow(src)` flags missing-`return` paths (9.2) and `Date`/`Math.random`/`fetch`/DB imports outside `once` (9.3). The runtime W-O `outputSchema` check in `tick()` covers the taken branch.
 - `svelte-check` 0 errors / 0 warnings; `biome check` clean; `test:unit` green.
+
+## Host wiring (starter + tick route)
+
+The lib owns the engine; the host owns tables, env, routes and Alfred I/O.
+
+1. **Tables**: copy `emw/migrations/0017_workflows.sql` into the host's `migrations/` (forward-only, `IF NOT EXISTS`).
+2. **Starter** (creates the run, pinned to this deployment):
+
+```ts
+import { createRun } from 'emw-lib/workflows-server'
+import { getAsyncWorkflow } from 'emw-lib'
+import { env } from '$env/dynamic/private'
+import './workflows/marketAnalysis.js' // populate the deploy-time registry
+
+const run = await createRun(
+  {
+    workflowName: 'marketAnalysis',
+    workflowVersion: 1,
+    inputJson: input,
+    deploymentUrl: env.VERCEL_URL ?? 'http://localhost:5173',
+    prodDeploymentUrl: env.VERCEL_PROJECT_PRODUCTION_URL ?? '',
+  },
+  sql
+)
+// Return `run.id` + `run.deployment_url` — every continuation routes to it.
+```
+
+3. **Tick route** (`POST /api/workflows/[runId]/tick`, `maxDuration: 60`):
+
+```ts
+import { getAsyncWorkflow } from 'emw-lib'
+import { tick } from 'emw-lib/workflows-server'
+import { AlfredClient } from 'emw-lib'
+import { env } from '$env/dynamic/private'
+import '../workflows/marketAnalysis.js'
+
+const alfred = new AlfredClient({ baseUrl: env.BUTLER_URL, webhookSecret: env.ALFRED_WEBHOOK_SECRET })
+// Pinned webhook base: continuations + Alfred callbacks route here, never HEAD.
+const pinnedBase = (deploymentUrl: string) => deploymentUrl.replace(/\/$/, '')
+const result = await tick(runId, {
+  sql,
+  lookupWorkflow: (name, version) => getAsyncWorkflow(name, version),
+  postSession: (i) => alfred.createSession({ agent: { model: i.model, system_prompt: i.systemPrompt }, toolset: i.toolset }).then((r) => r.session_id),
+  runTool: async (tool, input) => {
+    /* enqueue `execute` on the pinned deployment; resolution writes via resolveInteraction */
+  },
+  prodDeploymentUrl: env.VERCEL_PROJECT_PRODUCTION_URL ?? undefined,
+  onEvent: (e) => {
+    if (e.type === 'interaction_opened' && e.kind === 'prompt') {
+      // Host-owned: POST the generation to Alfred with the run's pinned
+      // deployment as webhook_url (the driver never POSTs prompts itself).
+      // void alfred.prompt(sessionId, { prompt, webhook_url: `${pinnedBase(run.deployment_url)}/api/workflows/${runId}/resolve` })
+    }
+    streamPublish(runId, e)
+  },
+  persistEvent: (e) => streamPersist(runId, e),
+})
+```
+
+4. **Prompt resolution** (Alfred generation webhook): run the §2.2 ladder + `expectedSchema.safeParse` over the terminal answer, then `resolveInteraction(runId, idx, { status: 'resolved', output } | { status: 'failed', error })`. Emit `interaction_resolved` + `human_*`/`log` on the host transport.
+5. **Pinning**: FE play/pause/cancel, tool webhooks and evolution notifications all POST to `run.deployment_url`, never HEAD. Stale runs emit `version_stale` and continue; pruned deployments get `error('deployment_gone')` via `markDeploymentGone` through HEAD.
+6. **Vercel hardening**: bypass tokens for protected deployments, CORS for FE→deployment host, pruning-retention policy (all three before §8 is real in preview).

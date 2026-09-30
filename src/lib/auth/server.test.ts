@@ -73,6 +73,7 @@ describe('readAuthEnv', () => {
 				AUTH_SECRET: 's',
 				PUBLIC_BASE_URL: 'https://app.example',
 				AUTH_ENABLED_PROVIDERS: 'google,email',
+				AUTH_TRUSTED_ORIGINS: ' https://app.example, https://preview.example ,',
 				AUTH_GOOGLE_ID: 'gid',
 				AUTH_GOOGLE_SECRET: 'gsecret',
 				AUTH_GITHUB_ID: 'incomplete',
@@ -82,10 +83,14 @@ describe('readAuthEnv', () => {
 			secret: 's',
 			baseUrl: 'https://app.example',
 			enabledProviders: 'google,email',
+			trustedOrigins: ['https://app.example', 'https://preview.example'],
 			google: { clientId: 'gid', clientSecret: 'gsecret' },
 			github: undefined,
 			resendApiKey: 're_123',
 		})
+	})
+	it('leaves trustedOrigins undefined when unset', () => {
+		expect(readAuthEnv({}).trustedOrigins).toBeUndefined()
 	})
 	it('trims values and picks up tenant/issuer extras', () => {
 		const env = readAuthEnv({

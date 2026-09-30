@@ -26,6 +26,14 @@ export interface AuthEnv {
 	baseUrl: string
 	/** `AUTH_ENABLED_PROVIDERS` allowlist — unlisted providers are rejected. */
 	enabledProviders?: string
+	/**
+	 * Extra trusted origins (`AUTH_TRUSTED_ORIGINS`, comma-separated).
+	 * The `baseUrl` origin is always trusted; list every public origin
+	 * that POSTs to the auth endpoints here (e.g. the Vercel prod URL) —
+	 * otherwise better-auth's origin check rejects with 403
+	 * (`INVALID_ORIGIN`). Same-origin dev needs nothing.
+	 */
+	trustedOrigins?: string[]
 	/** OAuth client pairs, present only for enabled providers. */
 	google?: { clientId: string; clientSecret: string }
 	microsoft?: { clientId: string; clientSecret: string; tenant?: string }
@@ -115,6 +123,11 @@ export function readAuthEnv(raw: Record<string, string | undefined>): AuthEnv {
 		secret: raw.AUTH_SECRET ?? '',
 		baseUrl: raw.PUBLIC_BASE_URL ?? 'http://localhost:5173',
 		enabledProviders: raw.AUTH_ENABLED_PROVIDERS,
+		trustedOrigins: raw.AUTH_TRUSTED_ORIGINS
+			? raw.AUTH_TRUSTED_ORIGINS.split(',')
+					.map((s) => s.trim())
+					.filter(Boolean)
+			: undefined,
 		google: cred('GOOGLE'),
 		microsoft: microsoft
 			? {
@@ -186,6 +199,11 @@ export function createAuth(env: AuthEnv, db: AuthDb) {
 	return betterAuth({
 		secret: env.secret,
 		baseURL: env.baseUrl,
+		// Accept-header routing (no `/api/` prefix): the host mounts auth
+		// at `src/routes/auth/[...all]/+server.ts` and the client uses
+		// `basePath: '/auth'` — both sides must agree (see `docs/auth.md`).
+		basePath: '/auth',
+		trustedOrigins: env.trustedOrigins,
 		database: db.database,
 		emailAndPassword: {
 			enabled: effective.has('email'),
@@ -262,7 +280,7 @@ export async function resolveSession(
  * Populate `event.locals` from the request session
  * (`user`/`session`/`roles`/`locale`/`theme`). The host calls this FIRST
  * in its auth handle, then delegates to better-auth's `svelteKitHandler`
- * (which mounts `/api/auth/*`) — the lib never imports
+ * (which mounts `/auth/*`) — the lib never imports
  * `better-auth/svelte-kit` or `$app/*` (host injects both, same rule as
  * `FetchFn`/`baseUrl`: the lib owns the shape, the host owns the env).
  *

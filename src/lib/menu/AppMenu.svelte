@@ -31,13 +31,20 @@
 <script lang="ts">
 	import { onMount } from 'svelte'
 	import { MenuPreferences, type Theme } from './preferences.svelte.js'
-	import { isMenuLink, type LocaleOption, type MenuToolItem, type NavItem } from './types.js'
+	import {
+		isMenuLink,
+		type LocaleOption,
+		type MenuAuthState,
+		type MenuToolItem,
+		type NavItem
+	} from './types.js'
 
 	const HIDE_DELAY_DEFAULT = 1000
 
 	let {
 		nav = [],
 		tools = [],
+		auth = null,
 		locales = [],
 		currentLocale = undefined,
 		initialLocale = undefined,
@@ -53,6 +60,11 @@
 		nav?: NavItem[]
 		/** Per-page tools rendered next to the gear (e.g. CV PDF save link). */
 		tools?: MenuToolItem[]
+		/**
+		 * Optional auth entry rendered next to the gear (login link when
+		 * anonymous, user chip + sign-out when signed in). Omit to hide.
+		 */
+		auth?: MenuAuthState | null
 		/**
 		 * Language options in display order. The language row renders only
 		 * when more than one is provided — single-locale apps pass one (or
@@ -102,6 +114,11 @@
 	const activeUserTheme = $derived(userTheme ?? prefs.userTheme)
 	const activeEffectiveTheme = $derived(effectiveTheme ?? prefs.effectiveTheme)
 	const showLanguageRow = $derived(locales.length > 1)
+	// Auth entry: signed-in user label (`name ?? email`), else the login
+	// link. Both omitted = no auth UI (apps without auth yet).
+	const authLabel = $derived(auth?.user?.name ?? auth?.user?.email ?? null)
+	const showLogin = $derived(!authLabel && auth?.loginHref)
+	const showUser = $derived(authLabel !== null)
 
 	let configOpen = $state(false)
 	let configTimer: ReturnType<typeof setTimeout> | undefined = undefined
@@ -272,6 +289,29 @@
 				<span class="sr-only">{tool.label}</span>
 			</a>
 		{/each}
+		{#if showLogin}
+			<a
+				class="user-config__trigger user-config__auth"
+				href={auth?.loginHref}
+				aria-label="Log in"
+				title="Log in"
+				data-sveltekit-preload-data="false"
+			>
+				<span aria-hidden="true">👤</span>
+				<span class="sr-only">Log in</span>
+			</a>
+		{:else if showUser}
+			<button
+				type="button"
+				class="user-config__trigger user-config__auth"
+				aria-label={`Signed in as ${authLabel} — sign out`}
+				title={`Signed in as ${authLabel} — sign out`}
+				onclick={() => auth?.onSignOut?.()}
+			>
+				<span aria-hidden="true">👤</span>
+				<span class="sr-only">Signed in as {authLabel} — sign out</span>
+			</button>
+		{/if}
 		<button
 			type="button"
 			class="user-config__trigger user-config__trigger--config"

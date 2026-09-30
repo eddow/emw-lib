@@ -113,10 +113,12 @@ export interface CreateRunInput {
  * committed (or are still in flight). The conflict returns the existing
  * row instead of violating `UNIQUE (run_id, idx)`.
  *
- * `bytes_used` accounting (specs §7, incl. memo bytes) is owned by the
- * Phase 2 tick driver, not here: only the driver knows the resolved
- * `output_json` sizes at resolve time. This helper bumps `opens_used`
- * only.
+ * `bytes_used` (specs §7: sum of `input_json` + `output_json`, memo rows
+ * included) is bumped here on every open/resolve/memo write, so the
+ * driver's `maxBytes` gate can seed from the persisted column instead of
+ * re-scanning the journal. Byte lengths are computed in JS
+ * (`JSON.stringify(...).length` — the persisted encoding) and added as
+ * integers; the gate adds this tick's fresh input + queued memo writes.
  */
 export async function openInteraction(
 	runId: string,
@@ -124,6 +126,13 @@ export async function openInteraction(
 	input: OpenInteractionInput,
 	sql: WorkflowSql
 ): Promise<WorkflowInteractionRow[]> {
+	// Persisted-encoding byte cost of the fresh input (specs §7).
+	let inputBytes = 0
+	try {
+		inputBytes = JSON.stringify(input.inputJson ?? {}).length
+	} catch {
+		inputBytes = 0
+	}
 	const out = (await sql.transaction((txn) => [
 		txn`
 			INSERT INTO workflow_interactions
@@ -141,7 +150,7 @@ export async function openInteraction(
 				toolset_json AS "toolset_json", expires_at, created_at, updated_at`,
 		txn`
 			UPDATE workflow_runs
-			SET next_index = ${idx + 1}, opens_used = opens_used + 1, updated_at = NOW()
+			SET next_index = ${idx + 1}, opens_used = opens_used + 1, bytes_used = bytes_used + ${inputBytes}, updated_at = NOW()
 			WHERE id = ${runId} AND next_index <= ${idx}`,
 	])) as unknown as [WorkflowInteractionRow[], { id: string }[]]
 	if (out[0].length) return out[0]
@@ -222,6 +231,97 @@ export async function resolveExpiries(runId: string, sql: WorkflowSql): Promise<
 	return rows.length
 }
 
+/**
+ * Resolve one open row (specs §5, R5): `open → resolved | failed |
+ * cancelled | expired`. The `AND status = 'open'` guard makes any other
+ * transition impossible in code — a second resolve is a no-op returning
+ * `null` (never a silent overwrite of a terminal row).
+ *
+ * `output` is the resolved value (`output_json`); `error` the failure
+ * message. Exactly one must be set for `resolved`/`failed`; both stay
+ * NULL for `cancelled`/`expired`.
+ */
+export async function resolveInteraction(
+	runId: string,
+	idx: number,
+	resolution: { status: 'resolved'; output: unknown } | { status: 'failed'; error: string },
+	sql: WorkflowSql
+): Promise<WorkflowInteractionRow | null> {
+	// Resolved payload bytes join `bytes_used` (specs §7): structured
+	// output for `resolved`, message length for `failed`.
+	let resolveBytes = 0
+	try {
+		resolveBytes =
+			resolution.status === 'resolved'
+				? JSON.stringify(resolution.output ?? {}).length
+				: resolution.error.length
+	} catch {
+		resolveBytes = 0
+	}
+	const rows = (await sql`
+		UPDATE workflow_interactions
+		SET status = ${resolution.status}, output_json = ${resolution.status === 'resolved' ? JSON.stringify(resolution.output) : null}::jsonb,
+			error = ${resolution.status === 'failed' ? resolution.error : null}, updated_at = NOW()
+		WHERE run_id = ${runId} AND idx = ${idx} AND status = 'open'
+		RETURNING id, run_id, idx, kind, label, label_text, tool,
+			input_json AS "input_json", status,
+			output_json AS "output_json", error, session_id,
+			toolset_json AS "toolset_json", expires_at, created_at, updated_at
+	`) as WorkflowInteractionRow[]
+	if (rows[0] && resolveBytes > 0) {
+		await sql`
+			UPDATE workflow_runs
+			SET bytes_used = bytes_used + ${resolveBytes}, updated_at = NOW()
+			WHERE id = ${runId}`
+	}
+	return rows[0] ?? null
+}
+
+/**
+ * Cancel a run (specs §7, checklist 6.2): flip every `open` row to
+ * `cancelled`, then the run to terminal `cancelled` (distinct from
+ * `error`, §3.5 `run_status`). The journal is preserved for manual
+ * re-run. Returns the number of rows flipped.
+ *
+ * Terminal-guarded: a run already `done`/`error`/`cancelled` is a no-op
+ * (returns 0, journal untouched) — cancel must never rewrite a terminal
+ * outcome.
+ */
+export async function cancelRun(runId: string, sql: WorkflowSql): Promise<number> {
+	const guard = (await sql`
+		UPDATE workflow_runs
+		SET status = 'cancelled', updated_at = NOW()
+		WHERE id = ${runId} AND status IN ('running', 'waiting')
+		RETURNING id
+	`) as { id: string }[]
+	if (!guard.length) return 0
+	const rows = (await sql`
+		UPDATE workflow_interactions
+		SET status = 'cancelled', updated_at = NOW()
+		WHERE run_id = ${runId} AND status = 'open'
+		RETURNING id
+	`) as { id: number }[]
+	return rows.length
+}
+
+/**
+ * Mark a run `error('deployment_gone')` through production HEAD (specs
+ * §8, checklist 7.4): the CALLER writes this when the pinned deployment
+ * is unreachable — the pinned deployment itself cannot write its own
+ * unreachable notice. Terminal-guarded (no-op on `done`/`error`/
+ * `cancelled`), journal preserved for manual re-run. Returns `true` when
+ * the row was marked.
+ */
+export async function markDeploymentGone(runId: string, sql: WorkflowSql): Promise<boolean> {
+	const rows = (await sql`
+		UPDATE workflow_runs
+		SET status = 'error', error = 'deployment_gone', updated_at = NOW()
+		WHERE id = ${runId} AND status IN ('running', 'waiting')
+		RETURNING id
+	`) as { id: string }[]
+	return rows.length > 0
+}
+
 /** Read a memo row (`wf.once` cache, specs §2.3). Null on miss. */
 export async function readMemo(
 	runId: string,
@@ -249,7 +349,23 @@ export async function writeMemo(
 		ON CONFLICT (run_id, key) DO NOTHING
 		RETURNING run_id, key, fn_hash, output_json AS "output_json", created_at
 	`) as WorkflowMemoRow[]
-	if (rows[0]) return rows[0]
+	if (rows[0]) {
+		// Fresh memo bytes join `bytes_used` (specs §7). Conflict writes
+		// add nothing — first-write-wins.
+		let memoBytes = 0
+		try {
+			memoBytes = JSON.stringify(output ?? {}).length
+		} catch {
+			memoBytes = 0
+		}
+		if (memoBytes > 0) {
+			await sql`
+				UPDATE workflow_runs
+				SET bytes_used = bytes_used + ${memoBytes}, updated_at = NOW()
+				WHERE id = ${runId}`
+		}
+		return rows[0]
+	}
 	const existing = await readMemo(runId, key, sql)
 	if (!existing) throw new Error(`memo not found after write: ${key}`)
 	return existing

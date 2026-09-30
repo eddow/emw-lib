@@ -92,6 +92,22 @@ export interface MenuToolItem {
 	rel?: string
 }
 
+/**
+ * Auth entry for the config corner (rendered next to the gear, before the
+ * per-page `tools`). Client-safe: the lib never calls better-auth — the
+ * host passes a `loginHref` (anonymous) or a `user` + `onSignOut`
+ * (signed in). Omit both to hide the entry entirely (e.g. apps without
+ * auth yet).
+ */
+export interface MenuAuthState {
+	/** Signed-in display name (`name ?? email`). Omit when anonymous. */
+	user?: { name?: string | null; email?: string | null } | null
+	/** Where the login trigger navigates when anonymous. Omit to hide. */
+	loginHref?: string
+	/** Called after the sign-out trigger (host signs out + navigates). */
+	onSignOut?: () => void
+}
+
 /** Type guard: link entry (has `href`, no `component`). */
 export function isMenuLink(item: NavItem): item is MenuLinkItem {
 	return item.kind === 'link'

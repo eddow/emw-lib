@@ -13,6 +13,7 @@ export {
 	isMenuLink,
 	isMenuSlot,
 	type LocaleOption,
+	type MenuAuthState,
 	type MenuLinkItem,
 	type MenuSlotItem,
 	type MenuToolItem,

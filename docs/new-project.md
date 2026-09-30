@@ -31,7 +31,7 @@ biome — all green from day one.
     lib/server/{auth.ts,db.ts}
     lib/{auth-client.ts,index.ts}
     routes/login/{+page.server.ts,+page.svelte}
-    routes/api/auth/[...all]/+server.ts
+    routes/auth/[...all]/+server.ts
     routes/{+layout.svelte,layout.css,+page.server.ts,+page.svelte}
   static/robots.txt
 ```
@@ -375,22 +375,24 @@ routes guard with `isDbConfigured()` (503 / graceful degrade).
    post-build analyse with no env, and `createAuth` throws on empty secret —
    inject a placeholder when `building && !raw.AUTH_SECRET`; runtime still
    throws without a real `AUTH_SECRET`).
-2. `src/lib/auth-client.ts` — `createAuthClient({ baseURL })` +
+2. `src/lib/auth-client.ts` — `createAuthClient({ baseURL, basePath: '/auth' })` +
    `adminClient()` (copy verbatim).
 3. `src/routes/login/+page.svelte` + `+page.server.ts` — server `load`
    returns `effectiveAllowlist(...)` (computed from the real `AUTH_*`
    secrets — only the id list reaches the browser);
    `<LoginScreen client={facade} allowlist={data.allowlist} />`
    (copy both verbatim; no `PUBLIC_*` mirror var needed).
-4. `src/routes/api/auth/[...all]/+server.ts` — `GET`/`POST` →
-   `auth.handler(request)` (copy verbatim).
+4. `src/routes/auth/[...all]/+server.ts` — `GET`/`POST` →
+   `auth.handler(request)` (copy verbatim; no `/api/` prefix —
+   accept-header routing, server `basePath: '/auth'` lives in the lib).
 5. `src/hooks.server.ts` — `sequence(handleAuth, handleParaglide)`,
    auth first (`populateLocals` + `svelteKitHandler`) (copy verbatim).
 6. `src/app.d.ts` — `Locals { user, session, roles, locale, theme }`
    (copy verbatim).
 7. `.env.example` — `DATABASE_URL`, `AUTH_SECRET`, `PUBLIC_BASE_URL`,
    `AUTH_ENABLED_PROVIDERS` (optional — unset = auto-detect from present
-   `AUTH_*` secrets), `AUTH_<PROVIDER>_{ID,SECRET}`, `RESEND_API_KEY`
+   `AUTH_*` secrets), `AUTH_TRUSTED_ORIGINS` (prod URL — otherwise 403
+   `INVALID_ORIGIN`), `AUTH_<PROVIDER>_{ID,SECRET}`, `RESEND_API_KEY`
    (copy from `arb2b`).
 
 ## 9. Verify
