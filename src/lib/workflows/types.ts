@@ -2,8 +2,8 @@
  * asyncWF shared types — the workflow authoring surface
  * (`plans/asyncWF/specs.md` §2; build checklist Phase 0.1).
  *
- * Client-safe: no `node:` imports, no env reads. Both workflow code and the
- * `emw` tick driver program against these shapes.
+ * Client-safe: no `node:` imports, no env reads. Both workflow code and host
+ * tick drivers program against these shapes.
  *
  * Schemas stay zod-agnostic on purpose — `emw-lib` does not depend on zod.
  * {@link SchemaLike} is the minimal structural contract (`safeParse`) that

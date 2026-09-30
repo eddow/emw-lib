@@ -1,6 +1,8 @@
 /**
  * asyncWF tick driver — replay + suspend core
- * (`plans/asyncWF/specs.md` §§3–4; checklist Phases 2–3).
+ * (`plans/asyncWF/specs.md` §§3–4; checklist Phases 2–3). Server-only:
+ * import via `emw-lib/workflows-server`, never from browser code or the
+ * client-safe barrel (same split as `emw-lib/db-server`).
  *
  * One tick = load run → `resolveExpiries` → re-execute the workflow
  * function from the top against a per-tick `WFContext` → persist the
@@ -50,7 +52,7 @@ import type {
 	ToolRegistry,
 	WFContext,
 	WFCreateSessionInput,
-} from '../../../../../emw-lib/src/lib/workflows/index.js'
+} from './index.js'
 import {
 	CONTROL_FLOW_TAG,
 	fnSourceHash,
@@ -58,8 +60,7 @@ import {
 	isControlFlow,
 	payloadHash,
 	throwControlFlow,
-} from '../../../../../emw-lib/src/lib/workflows/index.js'
-import { getSql } from '../db'
+} from './index.js'
 import {
 	appendLogbook,
 	getRun,
@@ -128,7 +129,11 @@ export interface TickState {
 }
 
 export interface TickDeps {
-	sql?: WorkflowSql
+	/**
+	 * Host Neon client (required — the lib never imports the host's
+	 * `db.ts`; same rule as `AuthEnv`/`AuthDb` in `emw-lib/auth-server`).
+	 */
+	sql: WorkflowSql
 	/** Alfred `POST /sessions` → session id (injected; R1 failure path tested). */
 	postSession?: (input: WFCreateSessionInput) => Promise<string>
 	/** Tool execution for fresh opens (injected; Phase 4.2 wires Alfred). */
@@ -917,7 +922,9 @@ function buildContext(state: TickState): WFContext<ToolRegistry> {
  * slots (in-flight opens that never committed — e.g. the over-budget
  * handle in a failed `wf.all` batch).
  */
-function committedOpens(state: TickState): { idx: number; kind: InteractionKind; label: string }[] {
+export function committedOpens(
+	state: TickState
+): { idx: number; kind: InteractionKind; label: string }[] {
 	return state.pendingOpens.filter(
 		(o): o is { idx: number; kind: InteractionKind; label: string } => o.kind !== '__reserve__'
 	)
@@ -927,8 +934,9 @@ function committedOpens(state: TickState): { idx: number; kind: InteractionKind;
  * Run one tick for `runId` (§3.1):
  * load → `resolveExpiries` → re-execute → `done` / `waiting` / `error`.
  */
-export async function tick(runId: string, deps: TickDeps = {}): Promise<TickResult> {
-	const sql = deps.sql ?? getSql()
+export async function tick(runId: string, deps: TickDeps): Promise<TickResult> {
+	const sql = deps.sql
+	if (!sql) throw new Error('tick: deps.sql is required (host passes its Neon client)')
 	const run = await getRun(runId, sql)
 	if (!run) throw new Error(`workflow run not found: ${runId}`)
 	if (run.status === 'done' || run.status === 'error' || run.status === 'cancelled') {

@@ -1,6 +1,15 @@
 /**
- * asyncWF journal helpers — persistence over `migrations/0017_workflows.sql`
- * (checklist Phase 1.2; specs §§3.2–3.4).
+ * asyncWF journal helpers — persistence over the host's workflow tables
+ * (checklist Phase 1.2, specs §§3.2–3.4). Server-only: import via
+ * `emw-lib/workflows-server`, never from browser code or the client-safe
+ * barrel (same split as `emw-lib/db-server`, `emw-lib/alfred-server`).
+ *
+ * The host owns its `migrations/*.sql` files, its `DATABASE_URL` env and
+ * its Neon client; the lib owns the journal SQL so every app gets the same
+ * atomic open TX, expiry sweep, memo read/write and logbook append. The
+ * lib never imports `$env/*`, `$lib/server` or a host `db.ts` — the host
+ * passes its `sql` client in (same rule as `AuthEnv`/`AuthDb` in
+ * `emw-lib/auth-server`).
  *
  * - Atomic open TX: INSERT the interaction row + bump `next_index` in one
  *   Neon `sql.transaction()` (specs §3.3, §A4). A crash between the two
@@ -11,10 +20,16 @@
  * - Logbook append: only persisted-lines counting (specs §3.4, §7).
  */
 
-import { getSql } from '../db'
-
-/** Minimal Neon client surface used here (real client + test fakes). */
-export type WorkflowSql = ReturnType<typeof getSql>
+/**
+ * Minimal Neon client surface the journal needs — satisfied by the Neon
+ * HTTP client (`getSql()` in the host's `src/lib/server/db.ts`) and by
+ * test fakes. Structural on purpose: the lib must not import the host's
+ * `db.ts` (that would drag `$env/dynamic/private` into `emw-lib`).
+ */
+export type WorkflowSql = {
+	(strings: TemplateStringsArray, ...vals: unknown[]): Promise<unknown[]>
+	transaction: <T>(fn: (txn: WorkflowSql) => T[]) => Promise<T[]>
+}
 
 export type InteractionKind = 'prompt' | 'tool' | 'session'
 export type InteractionStatus = 'open' | 'resolved' | 'failed' | 'cancelled' | 'expired'
@@ -107,7 +122,7 @@ export async function openInteraction(
 	runId: string,
 	idx: number,
 	input: OpenInteractionInput,
-	sql: WorkflowSql = getSql()
+	sql: WorkflowSql
 ): Promise<WorkflowInteractionRow[]> {
 	const out = (await sql.transaction((txn) => [
 		txn`
@@ -128,7 +143,7 @@ export async function openInteraction(
 			UPDATE workflow_runs
 			SET next_index = ${idx + 1}, opens_used = opens_used + 1, updated_at = NOW()
 			WHERE id = ${runId} AND next_index <= ${idx}`,
-	])) as [WorkflowInteractionRow[], { id: string }[]]
+	])) as unknown as [WorkflowInteractionRow[], { id: string }[]]
 	if (out[0].length) return out[0]
 	// Conflict: the aborted attempt already opened this idx — return the winner.
 	const existing = (await sql`
@@ -146,10 +161,7 @@ export async function openInteraction(
  * Insert the run row (owned by the starter, Phase 2 tick driver).
  * `deploymentUrl` is required — §8 pinning is load-bearing, no URL-less runs.
  */
-export async function createRun(
-	input: CreateRunInput,
-	sql: WorkflowSql = getSql()
-): Promise<WorkflowRunRow> {
+export async function createRun(input: CreateRunInput, sql: WorkflowSql): Promise<WorkflowRunRow> {
 	if (!input.deploymentUrl) throw new Error('"deploymentUrl" is required')
 	const rows = (await sql`
 		INSERT INTO workflow_runs
@@ -168,10 +180,7 @@ export async function createRun(
 }
 
 /** Load a run row by id (null when unknown). */
-export async function getRun(
-	runId: string,
-	sql: WorkflowSql = getSql()
-): Promise<WorkflowRunRow | null> {
+export async function getRun(runId: string, sql: WorkflowSql): Promise<WorkflowRunRow | null> {
 	const rows = (await sql`
 		SELECT id, workflow_name, workflow_version, input_json AS "input_json",
 			deployment_url, prod_deployment_url, status,
@@ -185,7 +194,7 @@ export async function getRun(
 /** Load the full interaction journal for a run, ordered by `idx`. */
 export async function listInteractions(
 	runId: string,
-	sql: WorkflowSql = getSql()
+	sql: WorkflowSql
 ): Promise<WorkflowInteractionRow[]> {
 	return (await sql`
 		SELECT id, run_id, idx, kind, label, label_text, tool,
@@ -202,7 +211,7 @@ export async function listInteractions(
  * Lazily expire: `open` rows past `expires_at` → `expired` (specs §7).
  * Returns the number of rows flipped.
  */
-export async function resolveExpiries(runId: string, sql: WorkflowSql = getSql()): Promise<number> {
+export async function resolveExpiries(runId: string, sql: WorkflowSql): Promise<number> {
 	const rows = (await sql`
 		UPDATE workflow_interactions
 		SET status = 'expired', updated_at = NOW()
@@ -217,7 +226,7 @@ export async function resolveExpiries(runId: string, sql: WorkflowSql = getSql()
 export async function readMemo(
 	runId: string,
 	key: string,
-	sql: WorkflowSql = getSql()
+	sql: WorkflowSql
 ): Promise<WorkflowMemoRow | null> {
 	const rows = (await sql`
 		SELECT run_id, key, fn_hash, output_json AS "output_json", created_at
@@ -232,7 +241,7 @@ export async function writeMemo(
 	key: string,
 	fnHash: string,
 	output: unknown,
-	sql: WorkflowSql = getSql()
+	sql: WorkflowSql
 ): Promise<WorkflowMemoRow> {
 	const rows = (await sql`
 		INSERT INTO workflow_memos (run_id, key, fn_hash, output_json)
@@ -255,7 +264,7 @@ export async function appendLogbook(
 	runId: string,
 	tick: number,
 	lines: { label?: string; idx?: number | null; message: string; data?: unknown }[],
-	sql: WorkflowSql = getSql()
+	sql: WorkflowSql
 ): Promise<void> {
 	if (!lines.length) return
 	const seqs = lines.map((_, i) => i)

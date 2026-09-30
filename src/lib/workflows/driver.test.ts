@@ -1,19 +1,13 @@
-import { describe, expect, it, vi } from 'vitest'
-import type { ToolRegistry, WFContext } from '../../../../../emw-lib/src/lib/workflows/index.js'
-import { InteractionFailed } from '../../../../../emw-lib/src/lib/workflows/index.js'
+import { describe, expect, it } from 'vitest'
 import {
 	collectOutcome,
 	hasControlFlowOutcome,
 	installSentinelRejectionGuard,
 	tick,
 } from './driver'
+import type { ToolRegistry, WFContext } from './index.js'
+import { InteractionFailed } from './index.js'
 import type { WorkflowInteractionRow, WorkflowRunRow } from './journal'
-
-vi.mock('$env/dynamic/private', () => ({
-	get env() {
-		return process.env
-	},
-}))
 
 /** In-memory journal fake: rows keyed by (run_id, idx). */
 function fakeDb(opts: {
@@ -151,7 +145,7 @@ function fakeDb(opts: {
 		}
 	)
 	return {
-		sql: sql as unknown as NonNullable<Parameters<typeof tick>[1]>['sql'],
+		sql: sql as unknown as import('./journal.js').WorkflowSql,
 		queries,
 		run,
 		rows,

@@ -25,6 +25,10 @@
 			"types": "./src/lib/db/server.ts",
 			"default": "./src/lib/db/engine.js"
 		},
+		"./workflows-server": {
+			"types": "./src/lib/workflows/server.ts",
+			"default": "./src/lib/workflows/server.ts"
+		},
 		"./package.json": "./package.json"
 	},
 	"scripts": {

@@ -68,7 +68,7 @@ Deps — app always needs (versions: copy from `arb2b/package.json` at scaffold 
 
 - `dependencies`: `@neondatabase/serverless`, `better-auth`, `pg`,
   `"emw-lib": "github:eddow/emw-lib"` (exact spec — see §2).
-- `devDependencies`: `@sveltejs/kit`, `@sveltejs/adapter-auto`, `svelte`,
+- `devDependencies`: `@sveltejs/kit`, `@sveltejs/adapter-vercel`, `svelte`,
   `vite`, `typescript`, `svelte-check`, `@sveltejs/vite-plugin-svelte`,
   `@tailwindcss/vite`, `tailwindcss`, `@inlang/paraglide-js`,
   `vitest`, `@vitest/browser-playwright`, `vitest-browser-svelte`,
@@ -186,7 +186,7 @@ Style: tabs, single quotes, `semicolons: asNeeded`, 100 cols.
 
 ```ts
 import { paraglideVitePlugin } from '@inlang/paraglide-js'
-import adapter from '@sveltejs/adapter-auto'
+import adapter from '@sveltejs/adapter-vercel'
 import { sveltekit } from '@sveltejs/kit/vite'
 import tailwindcss from '@tailwindcss/vite'
 import { playwright } from '@vitest/browser-playwright'
@@ -208,6 +208,12 @@ export default defineConfig({
 		migrationsPlugin({ name: '<app>-migrations' }),
 		tailwindcss(),
 		sveltekit({
+			// Only when the app ships `src/instrumentation.server.ts`
+			// (Sentry does — `arb2b` has one, `emw` doesn't): SvelteKit
+			// refuses the file unless this experimental flag is set.
+			// No `svelte.config.*` in this repo — config lives here inline.
+			// Omit the flag when there is no instrumentation file.
+			experimental: { instrumentation: { server: true } },
 			compilerOptions: {
 				// Force runes mode for the project, except for libraries. Can be removed in svelte 6.
 				runes: ({ filename }) =>
@@ -251,9 +257,12 @@ export default defineConfig({
 })
 ```
 
-`emw` deltas (only if needed): `adapter-vercel` instead of `adapter-auto`,
+`emw` deltas (only if needed):
 `mdsvex` preprocess + `extensions`, `VITE_BUILD_DATE` define, custom
-`playwright.config.ts` (dev-server on 5559, salt cookie). Default to the
+`playwright.config.ts` (dev-server on 5559, salt cookie). Adapter is
+`adapter-vercel` everywhere — all apps deploy to Vercel. `emw` has no
+`src/instrumentation.server.ts`, so it omits the `experimental` flag —
+keep the flag only in apps that ship the file (Sentry). Default to the
 minimal above.
 
 `playwright.config.ts` (default):

@@ -3,7 +3,7 @@
  * (`plans/asyncWF/specs.md` §2; build checklist Phase 0.3).
  *
  * Client-safe: no `node:` imports, no env reads. Registration is an
- * in-memory map on the deploying bundle; the `emw` tick driver resolves
+ * in-memory map on the deploying bundle; the host tick driver resolves
  * the definition by name + version and re-executes `fn` every tick.
  */
 

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
 	appendLogbook,
 	createRun,
@@ -9,12 +9,6 @@ import {
 	resolveExpiries,
 	writeMemo,
 } from './journal'
-
-vi.mock('$env/dynamic/private', () => ({
-	get env() {
-		return process.env
-	},
-}))
 
 /** Fake `sql` tagged-template stub dispatching on the query text. */
 function fakeSql(handlers: Record<string, unknown[] | unknown>) {
@@ -53,7 +47,7 @@ function fakeSql(handlers: Record<string, unknown[] | unknown>) {
 			},
 		}
 	)
-	return { sql: sql as unknown as Parameters<typeof getRun>[1], queries }
+	return { sql: sql as unknown as import('./journal.js').WorkflowSql, queries }
 }
 
 describe('openInteraction', () => {
@@ -115,7 +109,7 @@ describe('openInteraction', () => {
 				for (const stmt of fn(txn)) out.push(await stmt)
 				return out
 			},
-		}) as unknown as Parameters<typeof openInteraction>[3]
+		}) as unknown as import('./journal.js').WorkflowSql
 		await expect(
 			openInteraction('r-1', 3, { kind: 'prompt', label: 'terms', label_text: 'Asking…' }, sql)
 		).rejects.toThrow('connection reset')
