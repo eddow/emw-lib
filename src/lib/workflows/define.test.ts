@@ -1,0 +1,98 @@
+/**
+ * `defineAsyncWorkflow` registration (checklist Phase 0.3).
+ *
+ * Mirrors `plans/asyncWF/example1.ts`'s shape — one async function over
+ * `WFContext` + `describeStep` — and proves it registers in the map.
+ */
+
+import { describe, expect, it } from 'vitest'
+import type { ToolRegistry, WFContext } from './index.js'
+import {
+	clearAsyncWorkflows,
+	defineAsyncWorkflow,
+	getAsyncWorkflow,
+	listAsyncWorkflows,
+} from './index.js'
+
+type ExampleRegistry = ToolRegistry & {
+	serp_search: { input: { source: string; terms: string }; output: { id: string }[] }
+}
+
+type WFInput = { productDescription: string; marketplaces: string[] }
+type WFOutput = string
+
+async function marketplaceAnalysis(
+	{ createSession, all, use }: WFContext<ExampleRegistry>,
+	input: WFInput
+): Promise<WFOutput> {
+	const session = await createSession({
+		model: 'anthropic/claude-sonnet-4',
+		systemPrompt: 'You are a marketplace research assistant.',
+		initialPrompt: `Product under study: ${input.productDescription}`,
+	})
+	const terms = await session.prompt('terms', `Product: ${input.productDescription}`)
+	const pages = await all(input.marketplaces.map((source) => use.serp_search({ source, terms })))
+	return await session.prompt('summary', `Entries: ${pages.flat().length}`)
+}
+
+describe('defineAsyncWorkflow', () => {
+	it('registers { name, version, fn, describeStep }', () => {
+		expect.assertions(4)
+		clearAsyncWorkflows()
+		const def = defineAsyncWorkflow(marketplaceAnalysis, {
+			name: 'marketplaceAnalysis',
+			version: 1,
+			describeStep: ({ label }) => `Step ${label}`,
+		})
+		expect(def.name).toBe('marketplaceAnalysis')
+		expect(def.version).toBe(1)
+		expect(getAsyncWorkflow('marketplaceAnalysis', 1)?.fn).toBe(marketplaceAnalysis)
+		expect(listAsyncWorkflows()).toHaveLength(1)
+		clearAsyncWorkflows()
+	})
+
+	it('get-missing returns undefined', () => {
+		expect.assertions(2)
+		clearAsyncWorkflows()
+		expect(getAsyncWorkflow('nope', 1)).toBeUndefined()
+		expect(listAsyncWorkflows()).toHaveLength(0)
+	})
+
+	it('duplicate name@version throws (no silent overwrite)', () => {
+		expect.assertions(2)
+		clearAsyncWorkflows()
+		defineAsyncWorkflow(marketplaceAnalysis, {
+			name: 'marketplaceAnalysis',
+			version: 1,
+			describeStep: ({ label }) => `Step ${label}`,
+		})
+		expect(() =>
+			defineAsyncWorkflow(marketplaceAnalysis, {
+				name: 'marketplaceAnalysis',
+				version: 1,
+				describeStep: ({ label }) => `Step ${label}`,
+			})
+		).toThrow('already registered: marketplaceAnalysis@1')
+		// Same name, different version is a distinct registration.
+		defineAsyncWorkflow(marketplaceAnalysis, {
+			name: 'marketplaceAnalysis',
+			version: 2,
+			describeStep: ({ label }) => `Step ${label}`,
+		})
+		expect(listAsyncWorkflows()).toHaveLength(2)
+		clearAsyncWorkflows()
+	})
+
+	it('clearAsyncWorkflows isolates registrations', () => {
+		expect.assertions(2)
+		clearAsyncWorkflows()
+		defineAsyncWorkflow(marketplaceAnalysis, {
+			name: 'marketplaceAnalysis',
+			version: 1,
+			describeStep: ({ label }) => `Step ${label}`,
+		})
+		clearAsyncWorkflows()
+		expect(getAsyncWorkflow('marketplaceAnalysis', 1)).toBeUndefined()
+		expect(listAsyncWorkflows()).toHaveLength(0)
+	})
+})

@@ -12,7 +12,9 @@ Client-safe shared library (`emw-lib/src/lib`). No `node:` imports, no
 ## Layout
 
 - `src/lib/alfred/` — Alfred client. Full guide: `docs/alfred.md`. Protocol: `butler/docs/alfred.md`.
-- `docs/` — `README.md` (conventions + commands), `alfred.md` (client guide).
+- `src/lib/db/` — DB migration engine (server-only `./db-server`).
+- `docs/` — `README.md` (conventions + commands), `alfred.md` (client guide),
+  `auth.md` (auth guide), `new-project.md` (new-app scaffold checklist).
 
 ## Alfred quick reference
 
