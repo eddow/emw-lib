@@ -16,6 +16,7 @@ biome — all green from day one.
   pnpm-workspace.yaml
   pnpmfile.mjs
   tsconfig.json
+  vercel.json
   vite.config.ts
   playwright.config.ts
   project.inlang/settings.json
@@ -126,6 +127,24 @@ export const hooks = {
 ```
 engine-strict=true
 ```
+
+`vercel.json` (REQUIRED — copy verbatim, see why below):
+
+```json
+{
+	"$schema": "https://openapi.vercel.sh/vercel.json",
+	"installCommand": "pnpm install --no-frozen-lockfile"
+}
+```
+
+Why `--no-frozen-lockfile`: `package.json` declares
+`emw-lib: github:eddow/emw-lib`, but `pnpmfile.mjs` rewrites it to
+`workspace:../emw-lib` whenever the sibling checkout exists. The committed
+`pnpm-lock.yaml` therefore records `specifier: workspace:../emw-lib`. On
+Vercel only one repo is cloned, the rewrite does not apply, the spec stays
+`github:…` — mismatch → `ERR_PNPM_OUTDATED_LOCKFILE` (CI defaults to
+`--frozen-lockfile`). The flag lets pnpm resolve the GitHub tarball
+instead of failing. Same reason `pnpmfile.mjs` mentions both installers.
 
 ## 3. `tsconfig.json`, root `biome.json`, `.gitignore`
 
@@ -277,7 +296,8 @@ export const reroute: Reroute = (request) => deLocalizeUrl(request.url).pathname
 ## 6. Migrate databases on build (engine lives in `emw-lib/db-server`)
 
 The runner, the `vite build` plugin and the manual CLI all live in the lib
-(`emw-lib/src/lib/db/server.ts`); the app keeps only its `migrations/*.sql`
+(`emw-lib/src/lib/db/engine.js` runtime + `server.ts` types — see the
+plain-JS note below); the app keeps only its `migrations/*.sql`
 files (schema is per-app by design) plus one-line wiring:
 
 - `migrateFromDir()` — applies `*.sql` in filename order, tracks in
@@ -302,6 +322,18 @@ Wire: `migrationsPlugin({ name })` first in `vite.config.ts` `plugins`
 dynamic `neon` import; the host keeps its own copy for `db.ts` and may
 inject `connect`), `migrations/0000-initialisation.sql` (better-auth core +
 `user.role`/`user.locale`/`user.theme` extras — see `docs/auth.md`).
+
+Plain-JS engine (do NOT "simplify" back to a single `.ts`):
+`package.json` maps `./db-server` to `types: server.ts` +
+`default: engine.js`. `engine.js` is hand-written plain JS (zero TS syntax)
+because `vite.config.ts` / `scripts/db-migrate.mjs` are loaded by raw Node
+— Vite does not transpile its own config's bare imports — and since Node
+22.6+ type-stripping refuses TS files under `node_modules`
+(`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`), which is exactly where
+the GitHub tarball lands on Vercel. `server.ts` holds the canonical types
+and re-exports the `engine.js` runtime; the export-parity test in
+`server.test.ts` keeps both in sync. Rule: `node --check engine.js` must
+pass — if it doesn't, Vercel won't build either.
 
 ## 7. `src/lib/server/db.ts` (copy verbatim)
 

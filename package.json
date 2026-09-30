@@ -23,7 +23,7 @@
 		},
 		"./db-server": {
 			"types": "./src/lib/db/server.ts",
-			"default": "./src/lib/db/server.ts"
+			"default": "./src/lib/db/engine.js"
 		},
 		"./package.json": "./package.json"
 	},

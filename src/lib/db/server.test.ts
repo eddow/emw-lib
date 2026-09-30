@@ -2,10 +2,16 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import * as engine from './engine.js'
 import {
+	ensureMigrationsTable,
 	getAppliedMigrations,
+	loadDotenvFallback,
 	loadMigrationFiles,
 	type MigrationDb,
+	migrateFromDir,
+	migrationsPlugin,
+	runDbMigrate,
 	runMigrations,
 	splitStatements,
 } from './server.js'
@@ -115,5 +121,41 @@ describe('loadMigrationFiles', () => {
 		expect(files.map((f) => f.name)).toEqual(['0001_a.sql', '0002_b.sql'])
 		expect(files[0]?.text).toBe('SELECT 1;\n')
 		expect(files).toHaveLength(2)
+	})
+})
+
+describe('engine/server export parity', () => {
+	it('engine.js and server.ts export the same runtime names', async () => {
+		expect.assertions(2)
+		const server = await import('./server.js')
+		const expected = [
+			'ensureMigrationsTable',
+			'getAppliedMigrations',
+			'loadDotenvFallback',
+			'loadMigrationFiles',
+			'migrateFromDir',
+			'migrationsPlugin',
+			'runDbMigrate',
+			'runMigrations',
+			'splitStatements',
+		].sort()
+		expect(Object.keys(engine).sort()).toEqual(expected)
+		expect(
+			Object.keys(server)
+				.filter((k) => k !== 'default')
+				.sort()
+		).toEqual(expected)
+	})
+	it('typed wrapper delegates to the engine (spot-check)', () => {
+		expect.assertions(9)
+		expect(splitStatements).toBe(engine.splitStatements)
+		expect(loadMigrationFiles).toBe(engine.loadMigrationFiles)
+		expect(ensureMigrationsTable).toBe(engine.ensureMigrationsTable)
+		expect(getAppliedMigrations).toBe(engine.getAppliedMigrations)
+		expect(runMigrations).toBe(engine.runMigrations)
+		expect(migrateFromDir).toBe(engine.migrateFromDir)
+		expect(loadDotenvFallback).toBe(engine.loadDotenvFallback)
+		expect(migrationsPlugin).toBe(engine.migrationsPlugin)
+		expect(runDbMigrate).toBe(engine.runDbMigrate)
 	})
 })
