@@ -137,20 +137,37 @@ export class GenerationStream {
 	 * replaying durable events since {@link lastSeq}. Aborts any previous
 	 * loop first. Returns a promise that resolves when the loop ends; also
 	 * stored on {@link attached}.
+	 *
+	 * Pass `keepEvents: true` when the new generation CONTINUES the visible
+	 * conversation (prompt/retry turnover): the prior generation's durable
+	 * events stay in the log so the transcript keeps earlier turns. Default
+	 * (`false`) preserves the historical reset-and-attach behaviour.
 	 */
-	attach(credential: StreamCredential | string | null = null): Promise<void> {
+	attach(
+		credential: StreamCredential | string | null = null,
+		opts: { keepEvents?: boolean } = {}
+	): Promise<void> {
 		const gid = typeof credential === 'string' ? credential : (credential?.generation_id ?? this.id)
 		if (!gid)
 			return Promise.reject(new AlfredError('no generation id to attach', { code: 'validation' }))
 		if (credential && typeof credential !== 'string') {
 			this.#client.setStreamCredential(credential)
 		}
+		const keepEvents = opts.keepEvents ?? false
+		const retained = keepEvents ? this.events : []
+		const retainedStream = keepEvents
+			? { ...this.stream, status: 'streaming' as const, pendingHuman: [] }
+			: createStreamState()
 		this.#abort?.abort()
 		const ac = new AbortController()
 		this.#abort = ac
 		this.id = gid
 		this.status = 'streaming'
 		this.error = null
+		if (keepEvents) {
+			this.stream = retainedStream
+			this.events = retained
+		}
 		const run = this.#consume(gid, ac)
 		this.attached = run
 		return run

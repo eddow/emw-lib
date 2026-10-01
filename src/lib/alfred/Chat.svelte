@@ -334,15 +334,15 @@
 				onsend as (p: string, m?: ChatSendMode) => Promise<StreamCredential | null>
 			)(prompt, mode)
 			if (next) {
-				// New generation: reset the stream so the previous generation's
-				// terminal state (`done`/`error`) and event log don't leak
-				// into the new turn, then attach the fresh credential.
-				// Attach WITHOUT awaiting: the SSE loop lives until `done`
-				// (or dispose); awaiting it would hold `sending=true` and
-				// wedge the composer for the whole generation.
+				// New generation continues the visible conversation: keep the
+				// prior generation's durable events so earlier turns stay
+				// rendered (multi-turn retention), then attach the fresh
+				// credential. Attach WITHOUT awaiting: the SSE loop lives
+				// until `done` (or dispose); awaiting it would hold
+				// `sending=true` and wedge the composer for the whole
+				// generation.
 				liveCredential = next
-				stream.reset()
-				void stream.attach(next).catch((err: unknown) => {
+				void stream.attach(next, { keepEvents: true }).catch((err: unknown) => {
 					fail(err instanceof Error ? err.message : String(err))
 				})
 			}
@@ -380,8 +380,7 @@
 		}
 		if (next) {
 			liveCredential = next
-			stream.reset()
-			void stream.attach(next).catch((err: unknown) => {
+			void stream.attach(next, { keepEvents: true }).catch((err: unknown) => {
 				fail(err instanceof Error ? err.message : String(err))
 			})
 		}

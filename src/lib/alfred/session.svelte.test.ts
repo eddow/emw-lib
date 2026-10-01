@@ -138,6 +138,42 @@ describe('attach / reduce', () => {
 		const s = stream(fn)
 		await expect(s.attach(null)).rejects.toBeInstanceOf(AlfredError)
 	})
+
+	it('keepEvents retains prior durable events across generation turnover', async () => {
+		const CRED2: StreamCredential = {
+			generation_id: 'gen_2',
+			stream_token: 'tok-2',
+			stream_url: 'http://localhost:8192/streams/gen_2',
+		}
+		const { fn } = mockFetch([ANSWER('first', 1), DONE(2)])
+		const s = stream(fn)
+		await s.attach(CRED)
+		await s.attached
+		expect(s.events.map((e) => e.type)).toEqual(['answer', 'done'])
+
+		// Second generation continues the conversation: earlier turns stay.
+		await s.attach(CRED2, { keepEvents: true })
+		await s.attached
+		expect(s.id).toBe('gen_2')
+		expect(s.status).toBe('done')
+		expect(s.events.map((e) => e.type)).toEqual(['answer', 'done', 'answer', 'done'])
+	})
+
+	it('default attach still resets (no retention without keepEvents)', async () => {
+		const CRED2: StreamCredential = {
+			generation_id: 'gen_2',
+			stream_token: 'tok-2',
+			stream_url: 'http://localhost:8192/streams/gen_2',
+		}
+		const { fn } = mockFetch([ANSWER('first', 1), DONE(2)])
+		const s = stream(fn)
+		await s.attach(CRED)
+		await s.attached
+		s.reset()
+		await s.attach(CRED2)
+		await s.attached
+		expect(s.events.map((e) => e.type)).toEqual(['answer', 'done'])
+	})
 })
 
 describe('refreshStream', () => {
