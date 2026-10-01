@@ -182,13 +182,17 @@ export const BUILTIN_GENERIC: BuiltinToolDef[] = [
 	{
 		name: 'jev_decide',
 		description:
-			'Typed decision via the Jev Decisions API (noul P(true) / choice pick). Returns the raw answers map.',
+			'Typed decision (noul P(true) / choice pick / score level) via the decide backend — OpenRouter Decisions API by default, self-hosted Laya when ALFRED_DECIDE_URL is set. Returns the raw answers map.',
 		parameters: {
 			type: 'object',
 			properties: {
 				state: { type: 'object' },
 				questions: { type: 'object' },
-				model: { type: 'string' },
+				model: {
+					type: 'string',
+					description:
+						'Checkpoint pin (Laya: english|multilingual|typed-decisions) or Jev slug. Empty = auto-select.',
+				},
 			},
 			required: ['state', 'questions'],
 		},
@@ -305,12 +309,13 @@ export const BUILTIN_SPECIALISED: BuiltinToolDef[] = [
 	{
 		name: 'jev_match',
 		description:
-			'P(both titles are the exact same physical product) via Jev noul (0..1, match ≥ 0.8).',
+			'P(both titles are the exact same physical product) via noul (0..1, match ≥ 0.8). Optional model pins the Laya checkpoint.',
 		parameters: {
 			type: 'object',
 			properties: {
 				a_title: { type: 'string' },
 				b_title: { type: 'string' },
+				model: { type: 'string' },
 			},
 			required: ['a_title', 'b_title'],
 		},

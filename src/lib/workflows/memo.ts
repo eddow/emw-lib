@@ -1,6 +1,6 @@
 /**
  * Stable hashing for `wf.once` + journal identity
- * (`plans/asyncWF/specs.md` §§2.3, 3.2; checklist Phase 4.6).
+ * (see `docs/workflows/README.md`).
  *
  * Client-safe: no `node:` imports, no env reads.
  *

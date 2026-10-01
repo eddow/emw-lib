@@ -167,3 +167,12 @@ const result = await tick(runId, {
 4. **Prompt resolution** (Alfred generation webhook): run the §2.2 ladder + `expectedSchema.safeParse` over the terminal answer, then `resolveInteraction(runId, idx, { status: 'resolved', output } | { status: 'failed', error })`. Emit `interaction_resolved` + `human_*`/`log` on the host transport.
 5. **Pinning**: FE play/pause/cancel, tool webhooks and evolution notifications all POST to `run.deployment_url`, never HEAD. Stale runs emit `version_stale` and continue; pruned deployments get `error('deployment_gone')` via `markDeploymentGone` through HEAD.
 6. **Vercel hardening**: bypass tokens for protected deployments, CORS for FE→deployment host, pruning-retention policy (all three before §8 is real in preview).
+
+## Open host work (engine done, host-side residuals)
+
+- **Real-DB migrate pass**: `db:migrate` on fresh + existing DB, journal smoke incl. the `appendLogbook` UNNEST (unit fakes prove statement shape only).
+- **`interaction_resolved` / `human_*` / `log` emission**: the driver emits `interaction_opened` + `run_status` only; the rest belongs to the resolver/host transport (§4 above).
+- **`bytes_used` / `opens_used` persistence**: the driver computes the `maxBytes` gate; the journal bumps `opens_used` on open — full column accounting still open.
+- **Floating-promise lint**: `@typescript-eslint/no-floating-promises` for `wf.*` documented in `driver.ts`, not enforced (no eslint config in repo).
+- **Pinned-claim routing** for tool webhooks: host-side, same contract as §5.
+- **Vercel live verification**: bypass tokens, CORS, pruning-retention (§6) documented but unverified in preview; FE progress / `version_stale` / `cancelled` e2e lives in `plans/workflow-ui.md`.

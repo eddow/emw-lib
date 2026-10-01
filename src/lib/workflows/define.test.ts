@@ -1,7 +1,7 @@
 /**
- * `defineAsyncWorkflow` registration (checklist Phase 0.3).
+ * `defineAsyncWorkflow` registration.
  *
- * Mirrors `plans/asyncWF/example1.ts`'s shape — one async function over
+ * Mirrors the `marketAnalysis` workflow's shape — one async function over
  * `WFContext` + `describeStep` — and proves it registers in the map.
  */
 

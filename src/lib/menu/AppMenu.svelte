@@ -2,7 +2,13 @@
  * Unified floating app menu (client-safe, self-contained styles).
  *
  * Merges emw's `SiteTools` (left nav corner) + `UserConfig` (right config
- * gear with language + theme rows) into one component driven by props:
+ * menu with language + theme rows) into one component driven by props:
+ *
+ * When `auth` is passed, the corner trigger IS the account status
+ * (`🔑` signed out, `👤` signed in) instead of the gear, and the first
+ * menu row is the log-in link (anonymous) or sign-out button (signed
+ * in) — its icon matches the action. Without `auth` the trigger stays
+ * the plain gear (apps without auth yet).
  *
  * ```svelte
  * <AppMenu
@@ -19,7 +25,9 @@
  *   components (e.g. emw's CV tag-filter panel); the lib only owns the
  *   round trigger that toggles them.
  * - The lib never imports `$app/*` or paraglide: navigation and translated
- *   URLs are host callbacks/props (`onLocaleChange`, prebuilt `href`s).
+ *   URLs are host callbacks/props (`onLocaleChange`, prebuilt `href`s);
+ *   chrome strings come via the `labels` prop (host `m.*()`, English
+ *   defaults otherwise).
  *
  * SSR (no-blink): pass the host's SSR-known `initialLocale`/`initialTheme`
  * (cookie / auth user row) so first paint already marks the active locale
@@ -35,17 +43,37 @@
 		isMenuLink,
 		type LocaleOption,
 		type MenuAuthState,
+		type MenuLabels,
 		type MenuToolItem,
 		type NavItem
 	} from './types.js'
 
 	const HIDE_DELAY_DEFAULT = 1000
 
+	const DEFAULT_LABELS = {
+		site: 'Site',
+		userPreferences: 'User preferences',
+		account: 'Account',
+		accountSignedOut: 'Account — signed out',
+		accountSignedInAs: (label: string) => `Account — signed in as ${label}`,
+		login: 'Log in',
+		signOut: 'Sign out',
+		signedInTitle: (label: string) => `Signed in as ${label} — sign out`,
+		signOutAs: (label: string) => `Sign out (${label})`,
+		language: 'Language',
+		theme: 'Theme',
+		lightTheme: 'Light theme',
+		light: 'Light',
+		darkTheme: 'Dark theme',
+		dark: 'Dark'
+	} satisfies Required<MenuLabels>
+
 	let {
 		nav = [],
 		tools = [],
 		auth = null,
 		locales = [],
+		labels = {},
 		currentLocale = undefined,
 		initialLocale = undefined,
 		userTheme = undefined,
@@ -58,11 +86,14 @@
 	}: {
 		/** Left-corner nav entries (links + host-owned flyout slots). */
 		nav?: NavItem[]
-		/** Per-page tools rendered next to the gear (e.g. CV PDF save link). */
+		/** Per-page tools rendered next to the corner trigger (e.g. CV PDF save link). */
 		tools?: MenuToolItem[]
 		/**
-		 * Optional auth entry rendered next to the gear (login link when
-		 * anonymous, user chip + sign-out when signed in). Omit to hide.
+		 * Optional auth state. When passed, the corner trigger shows the
+		 * account status (`🔑` signed out, `👤` signed in) instead of the
+		 * gear, and the first menu row is the log-in link (anonymous +
+		 * `loginHref`) or sign-out button (signed-in `user` + `onSignOut`).
+		 * Omit for the plain gear (apps without auth yet).
 		 */
 		auth?: MenuAuthState | null
 		/**
@@ -71,6 +102,12 @@
 		 * none) and get no language UI.
 		 */
 		locales?: LocaleOption[]
+		/**
+		 * Translated chrome strings (group labels, theme + auth rows).
+		 * Paraglide lives in the host — pass `m.*()` strings here;
+		 * English defaults apply otherwise.
+		 */
+		labels?: MenuLabels
 		/** Controlled locale override (host-owned state). Uncontrolled when omitted. */
 		currentLocale?: string | undefined
 		/** SSR-known locale for first paint (cookie / user row). */
@@ -95,13 +132,36 @@
 	// once (same pattern as `AlfredChat`'s `history` prop — a remount picks
 	// up new values). Live updates flow through the controlled
 	// `currentLocale` / `userTheme` / `effectiveTheme` props instead.
+	// `lastSynced*` guards declared first: the `onLocaleChange` wrapper
+	// below writes them, so they must exist before `prefs` is built.
+	// Plain `$state` (not `$derived`): the sync `$effect` below writes
+	// them, and `$derived` values are read-only. The two `state_referenced_locally`
+	// warnings on the initializers are benign — construction-time seeding
+	// is exactly the intent (same as `prefs` itself just below).
 	// biome-ignore lint/correctness/useHookAtTopLevel: prefs must exist before onMount below
+	// svelte-ignore state_referenced_locally: construction-time seeding, a remount picks up new values.
+	let lastSyncedLocale: string | undefined = currentLocale
+	// svelte-ignore state_referenced_locally: construction-time seeding, a remount picks up new values.
+	let lastSyncedUserTheme: Theme | undefined = userTheme
 	const prefs = new MenuPreferences({
+		// svelte-ignore state_referenced_locally: construction-time seeding, a remount picks up new values.
 		locales: locales.map((l) => l.code),
+		// svelte-ignore state_referenced_locally: construction-time seeding, a remount picks up new values.
 		initialLocale: currentLocale ?? initialLocale ?? null,
+		// svelte-ignore state_referenced_locally: construction-time seeding, a remount picks up new values.
 		initialTheme: userTheme ?? initialTheme ?? null,
-		onLocaleChange: onLocaleChange ?? undefined,
-		onThemeChange: onThemeChange ?? undefined
+		onLocaleChange: (locale) => {
+			// Adopt the pick immediately so the active flag follows even
+			// when the host's controlled `currentLocale` is a stale
+			// snapshot (arb2b: one-shot `getLocale()`). The host callback
+			// still runs (persist + navigate); the remount then reseeds.
+			lastSyncedLocale = locale
+			onLocaleChange?.(locale)
+		},
+		onThemeChange: (theme) => {
+			lastSyncedUserTheme = theme
+			onThemeChange?.(theme)
+		}
 	})
 
 	onMount(() => {
@@ -110,15 +170,48 @@
 
 	$effect(() => () => prefs.dispose())
 
-	const activeLocale = $derived(currentLocale ?? prefs.currentLocale)
+	// Controlled props win when provided; otherwise the internal store
+	// owns the state. `syncLocale`/`syncTheme` adopt host updates without
+	// re-firing callbacks — but a stale controlled prop (host snapshot
+	// that never updates, e.g. arb2b's one-shot `getLocale()`) must not
+	// clobber an explicit in-menu pick, so only sync when the host value
+	// actually changed since last render.
+	$effect(() => {
+		if (currentLocale !== undefined && currentLocale !== lastSyncedLocale) {
+			lastSyncedLocale = currentLocale
+			prefs.syncLocale(currentLocale)
+		}
+		if (userTheme !== lastSyncedUserTheme) {
+			lastSyncedUserTheme = userTheme
+			if (userTheme !== undefined) prefs.syncTheme(userTheme)
+		}
+	})
+
+	// The store owns the rendered locale: it seeds from
+	// `currentLocale ?? initialLocale`, adopts host updates via the sync
+	// effect above, and adopts in-menu picks via the `onLocaleChange`
+	// wrapper — so the active flag follows even when the host's
+	// controlled prop is a stale snapshot.
+	const activeLocale = $derived(prefs.currentLocale)
 	const activeUserTheme = $derived(userTheme ?? prefs.userTheme)
 	const activeEffectiveTheme = $derived(effectiveTheme ?? prefs.effectiveTheme)
 	const showLanguageRow = $derived(locales.length > 1)
-	// Auth entry: signed-in user label (`name ?? email`), else the login
-	// link. Both omitted = no auth UI (apps without auth yet).
+	// Auth: signed-in user label (`name ?? email`). `hasAuth` swaps the
+	// gear trigger for the account-status trigger; the first menu row is
+	// then the log-in link (anonymous + `loginHref`) or the sign-out
+	// button (signed-in `user`). No `auth` prop = plain gear.
 	const authLabel = $derived(auth?.user?.name ?? auth?.user?.email ?? null)
 	const showLogin = $derived(!authLabel && auth?.loginHref)
 	const showUser = $derived(authLabel !== null)
+	const hasAuth = $derived(auth !== null)
+	const signedIn = $derived(authLabel !== null)
+	const authIcon = $derived(signedIn ? '👤' : '🔑')
+	const authTriggerLabel = $derived(
+		signedIn && authLabel
+			? (labels.accountSignedInAs?.(authLabel) ??
+				DEFAULT_LABELS.accountSignedInAs(authLabel))
+			: (labels.accountSignedOut ?? DEFAULT_LABELS.accountSignedOut)
+	)
 
 	let configOpen = $state(false)
 	let configTimer: ReturnType<typeof setTimeout> | undefined = undefined
@@ -205,7 +298,7 @@
 	}}
 />
 
-<nav class="site-tools" aria-label="Site">
+<nav class="site-tools" aria-label={labels.site ?? DEFAULT_LABELS.site}>
 	<div class="site-tools__bar">
 		{#each nav as item (item.id)}
 			{#if isMenuLink(item)}
@@ -262,11 +355,11 @@
 	</div>
 </nav>
 
-<div data-app-menu-config class="user-config" role="group" aria-label="User preferences">
+<div data-app-menu-config class="user-config" role="group" aria-label={labels.userPreferences ?? DEFAULT_LABELS.userPreferences}>
 	<div
 		class="user-config__bar"
 		role="group"
-		aria-label="User preferences"
+		aria-label={labels.userPreferences ?? DEFAULT_LABELS.userPreferences}
 		onmouseenter={() => {
 			cancelConfigHide()
 			configOpen = true
@@ -289,51 +382,79 @@
 				<span class="sr-only">{tool.label}</span>
 			</a>
 		{/each}
-		{#if showLogin}
-			<a
-				class="user-config__trigger user-config__auth"
-				href={auth?.loginHref}
-				aria-label="Log in"
-				title="Log in"
-				data-sveltekit-preload-data="false"
-			>
-				<span aria-hidden="true">👤</span>
-				<span class="sr-only">Log in</span>
-			</a>
-		{:else if showUser}
+		{#if hasAuth}
 			<button
 				type="button"
-				class="user-config__trigger user-config__auth"
-				aria-label={`Signed in as ${authLabel} — sign out`}
-				title={`Signed in as ${authLabel} — sign out`}
-				onclick={() => auth?.onSignOut?.()}
+				class="user-config__trigger user-config__trigger--auth"
+				class:user-config__trigger--signed-in={signedIn}
+				aria-label={authTriggerLabel}
+				title={authTriggerLabel}
+				aria-expanded={configOpen}
+				aria-haspopup="true"
+				onmouseenter={() => {
+					cancelConfigHide()
+					configOpen = true
+				}}
+				onclick={() => {
+					configOpen = true
+					cancelConfigHide()
+				}}
 			>
-				<span aria-hidden="true">👤</span>
-				<span class="sr-only">Signed in as {authLabel} — sign out</span>
+				<span aria-hidden="true">{authIcon}</span>
+				<span class="sr-only">{authTriggerLabel}</span>
+			</button>
+		{:else}
+			<button
+				type="button"
+				class="user-config__trigger user-config__trigger--config"
+				aria-label={labels.userPreferences ?? DEFAULT_LABELS.userPreferences}
+				aria-expanded={configOpen}
+				aria-haspopup="true"
+				onmouseenter={() => {
+					cancelConfigHide()
+					configOpen = true
+				}}
+				onclick={() => {
+					configOpen = true
+					cancelConfigHide()
+				}}
+			>
+				<span class="user-config__icon" aria-hidden="true"> ⚙ </span>
 			</button>
 		{/if}
-		<button
-			type="button"
-			class="user-config__trigger user-config__trigger--config"
-			aria-label="User preferences"
-			aria-expanded={configOpen}
-			aria-haspopup="true"
-			onmouseenter={() => {
-				cancelConfigHide()
-				configOpen = true
-			}}
-			onclick={() => {
-				configOpen = true
-				cancelConfigHide()
-			}}
-		>
-			<span class="user-config__icon" aria-hidden="true"> ⚙ </span>
-		</button>
 
 		<div class="user-config__menus" role="menu">
 			{#if configOpen}
+				{#if showLogin}
+					<div class="user-config__row user-config__row--auth" role="group" aria-label={labels.account ?? DEFAULT_LABELS.account}>
+						<a
+							class="user-config__option"
+							href={auth?.loginHref}
+							title={labels.login ?? DEFAULT_LABELS.login}
+							aria-label={labels.login ?? DEFAULT_LABELS.login}
+							data-sveltekit-preload-data="false"
+						>
+							<span aria-hidden="true">🔑</span><span class="sr-only">{labels.login ?? DEFAULT_LABELS.login}</span>
+						</a>
+					</div>
+				{:else if showUser}
+					<div class="user-config__row user-config__row--auth" role="group" aria-label={labels.account ?? DEFAULT_LABELS.account}>
+						<button
+							type="button"
+							class="user-config__option"
+							title={authLabel ? (labels.signedInTitle?.(authLabel) ?? DEFAULT_LABELS.signedInTitle(authLabel)) : (labels.signOut ?? DEFAULT_LABELS.signOut)}
+							aria-label={authLabel ? (labels.signOutAs?.(authLabel) ?? DEFAULT_LABELS.signOutAs(authLabel)) : (labels.signOut ?? DEFAULT_LABELS.signOut)}
+							onclick={() => {
+								configOpen = false
+								auth?.onSignOut?.()
+							}}
+						>
+							<span aria-hidden="true">🚪</span><span class="sr-only">{labels.signOut ?? DEFAULT_LABELS.signOut}</span>
+						</button>
+					</div>
+				{/if}
 				{#if showLanguageRow}
-					<div class="user-config__row user-config__row--locale" role="group" aria-label="Language">
+					<div class="user-config__row user-config__row--locale" role="group" aria-label={labels.language ?? DEFAULT_LABELS.language}>
 						{#each locales as locale (locale.code)}
 							<button
 								type="button"
@@ -350,28 +471,28 @@
 					</div>
 				{/if}
 				{#if showTheme}
-					<div class="user-config__row user-config__row--theme" role="group" aria-label="Theme">
+					<div class="user-config__row user-config__row--theme" role="group" aria-label={labels.theme ?? DEFAULT_LABELS.theme}>
 						<button
 							type="button"
 							class="user-config__option"
 							class:user-config__option--active={activeEffectiveTheme === 'light'}
 							aria-pressed={activeUserTheme === 'light'}
-							title="Light theme"
+							title={labels.lightTheme ?? DEFAULT_LABELS.lightTheme}
 							onclick={() => chooseTheme('light')}
 						>
 							<span aria-hidden="true">☀</span>
-							<span class="sr-only">Light</span>
+							<span class="sr-only">{labels.light ?? DEFAULT_LABELS.light}</span>
 						</button>
 						<button
 							type="button"
 							class="user-config__option"
 							class:user-config__option--active={activeEffectiveTheme === 'dark'}
 							aria-pressed={activeUserTheme === 'dark'}
-							title="Dark theme"
+							title={labels.darkTheme ?? DEFAULT_LABELS.darkTheme}
 							onclick={() => chooseTheme('dark')}
 						>
 							<span aria-hidden="true">☾</span>
-							<span class="sr-only">Dark</span>
+							<span class="sr-only">{labels.dark ?? DEFAULT_LABELS.dark}</span>
 						</button>
 					</div>
 				{/if}
@@ -475,6 +596,11 @@
 
 	.user-config__trigger:hover {
 		border-color: var(--menu-accent, var(--user-config-accent, #1a4f8a));
+	}
+
+	.user-config__trigger--signed-in {
+		border-color: var(--menu-accent, var(--user-config-accent, #1a4f8a));
+		box-shadow: inset 0 0 0 1px var(--menu-accent, var(--user-config-accent, #1a4f8a));
 	}
 
 	.user-config__menus {

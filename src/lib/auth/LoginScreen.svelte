@@ -19,7 +19,7 @@
  -->
 
 <script lang="ts">
-	import { credentialFlows, listSocialProviders, type AuthProvider } from './types.js'
+	import { credentialFlows, listSocialProviders, type AuthProvider, type LoginLabels } from './types.js'
 
 	/** Host-provided facade over `better-auth/svelte` (structural, swappable). */
 	export interface AuthClient {
@@ -41,12 +41,43 @@
 		signInSocial(input: { provider: string; callbackURL: string }): Promise<void>
 	}
 
+	const DEFAULT_LABELS = {
+		login: 'Log in',
+		chooseNewPassword: 'Choose a new password',
+		enterNewPassword: 'Enter your new password below.',
+		newPassword: 'New password',
+		updatePassword: 'Update password',
+		resetPassword: 'Reset your password',
+		emailResetLink: "We'll email you a reset link.",
+		sendResetLink: 'Send reset link',
+		welcomeBack: 'Welcome back',
+		signInContinue: 'Sign in to your account to continue.',
+		createAccount: 'Create your account',
+		createAccountIntro: 'Create your account to get started.',
+		name: 'Name',
+		email: 'Email',
+		password: 'Password',
+		signUp: 'Sign up',
+		signIn: 'Sign in',
+		forgotPassword: 'Forgot your password?',
+		noAccountSignUp: 'No account yet? Sign up',
+		alreadyRegistered: 'Already registered? Sign in',
+		backToSignIn: 'Back to sign in',
+		orContinueWith: 'or continue with',
+		loginWithGroup: 'Log in with',
+		loginWith: (providerLabel: string) => `Log in with ${providerLabel}`,
+		somethingWrong: 'Something went wrong',
+		checkInbox: 'Check your inbox for the reset link.',
+		passwordUpdated: 'Password updated — sign in with your new password.'
+	} satisfies Required<LoginLabels>
+
 	let {
 		client,
 		allowlist = 'email',
 		resetRedirectTo = '/login?reset=1',
 		callbackURL = '/',
-		ondone = null
+		ondone = null,
+		labels = {}
 	}: {
 		/** Facade over the better-auth Svelte client. */
 		client: AuthClient
@@ -58,6 +89,11 @@
 		callbackURL?: string
 		/** Called after success when the host wants SPA navigation instead. */
 		ondone?: ((path: string) => void) | null
+		/**
+		 * Translated UI strings. Paraglide lives in the host — pass
+		 * `m.*()` strings here; English defaults apply otherwise.
+		 */
+		labels?: LoginLabels
 	} = $props()
 
 	type Mode = 'signin' | 'signup' | 'lost' | 'reset'
@@ -92,12 +128,13 @@
 		busy = true
 		error = null
 		notice = null
+		const fallback = labels.somethingWrong ?? DEFAULT_LABELS.somethingWrong
 		try {
 			const { error: err } = await fn()
-			if (err) error = err.message ?? 'Something went wrong'
+			if (err) error = err.message ?? fallback
 			else ok()
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Something went wrong'
+			error = err instanceof Error ? err.message : fallback
 		} finally {
 			busy = false
 		}
@@ -124,7 +161,7 @@
 		await run(
 			() => client.requestPasswordReset({ email, redirectTo: resetRedirectTo }),
 			() => {
-				notice = 'Check your inbox for the reset link.'
+				notice = labels.checkInbox ?? DEFAULT_LABELS.checkInbox
 			}
 		)
 	}
@@ -135,7 +172,7 @@
 		await run(
 			() => client.resetPassword({ newPassword, token }),
 			() => {
-				notice = 'Password updated — sign in with your new password.'
+				notice = labels.passwordUpdated ?? DEFAULT_LABELS.passwordUpdated
 				mode = 'signin'
 			}
 		)
@@ -147,22 +184,25 @@
 		try {
 			await client.signInSocial({ provider, callbackURL })
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Something went wrong'
+			error =
+				err instanceof Error
+					? err.message
+					: (labels.somethingWrong ?? DEFAULT_LABELS.somethingWrong)
 			busy = false
 		}
 	}
 </script>
 
-<section class="emw-login" aria-label="Log in">
+<section class="emw-login" aria-label={labels.login ?? DEFAULT_LABELS.login}>
 	<div class="emw-login__card">
 		{#if mode === 'reset'}
 			<div class="emw-login__head">
-				<h1>Choose a new password</h1>
-				<p>Enter your new password below.</p>
+				<h1>{labels.chooseNewPassword ?? DEFAULT_LABELS.chooseNewPassword}</h1>
+				<p>{labels.enterNewPassword ?? DEFAULT_LABELS.enterNewPassword}</p>
 			</div>
 			<form class="emw-login__form" onsubmit={onReset}>
 				<label class="emw-login__field"
-					><span>New password</span>
+					><span>{labels.newPassword ?? DEFAULT_LABELS.newPassword}</span>
 					<input
 						type="password"
 						bind:value={newPassword}
@@ -174,54 +214,54 @@
 				{#if error}<p class="emw-login__error" role="alert">{error}</p>{/if}
 				{#if notice}<p class="emw-login__notice" role="status">{notice}</p>{/if}
 				<button class="emw-login__btn emw-login__btn--primary" type="submit" disabled={busy}>
-					Update password
+					{labels.updatePassword ?? DEFAULT_LABELS.updatePassword}
 				</button>
 			</form>
 			<button type="button" class="emw-login__link" onclick={() => (mode = 'signin')}>
-				Back to sign in
+				{labels.backToSignIn ?? DEFAULT_LABELS.backToSignIn}
 			</button>
 		{:else if mode === 'lost'}
 			<div class="emw-login__head">
-				<h1>Reset your password</h1>
-				<p>We'll email you a reset link.</p>
+				<h1>{labels.resetPassword ?? DEFAULT_LABELS.resetPassword}</h1>
+				<p>{labels.emailResetLink ?? DEFAULT_LABELS.emailResetLink}</p>
 			</div>
 			<form class="emw-login__form" onsubmit={onRequestReset}>
 				<label class="emw-login__field"
-					><span>Email</span>
+					><span>{labels.email ?? DEFAULT_LABELS.email}</span>
 					<input type="email" bind:value={email} required autocomplete="email" />
 				</label>
 				{#if error}<p class="emw-login__error" role="alert">{error}</p>{/if}
 				{#if notice}<p class="emw-login__notice" role="status">{notice}</p>{/if}
 				<button class="emw-login__btn emw-login__btn--primary" type="submit" disabled={busy}>
-					Send reset link
+					{labels.sendResetLink ?? DEFAULT_LABELS.sendResetLink}
 				</button>
 			</form>
 			<button type="button" class="emw-login__link" onclick={() => (mode = 'signin')}>
-				Back to sign in
+				{labels.backToSignIn ?? DEFAULT_LABELS.backToSignIn}
 			</button>
 		{:else}
 			<div class="emw-login__head">
-				<h1>{mode === 'signup' ? 'Create your account' : 'Welcome back'}</h1>
+				<h1>{mode === 'signup' ? (labels.createAccount ?? DEFAULT_LABELS.createAccount) : (labels.welcomeBack ?? DEFAULT_LABELS.welcomeBack)}</h1>
 				<p>
 					{mode === 'signup'
-						? 'Create your account to get started.'
-						: 'Sign in to your account to continue.'}
+						? (labels.createAccountIntro ?? DEFAULT_LABELS.createAccountIntro)
+						: (labels.signInContinue ?? DEFAULT_LABELS.signInContinue)}
 				</p>
 			</div>
 			{#if flows.emailPassword}
 				<form class="emw-login__form" onsubmit={mode === 'signup' ? onSignUp : onSignIn}>
 					{#if mode === 'signup'}
 						<label class="emw-login__field"
-							><span>Name</span>
+							><span>{labels.name ?? DEFAULT_LABELS.name}</span>
 							<input type="text" bind:value={name} required autocomplete="name" />
 						</label>
 					{/if}
 					<label class="emw-login__field"
-						><span>Email</span>
+						><span>{labels.email ?? DEFAULT_LABELS.email}</span>
 						<input type="email" bind:value={email} required autocomplete="email" />
 					</label>
 					<label class="emw-login__field"
-						><span>Password</span>
+						><span>{labels.password ?? DEFAULT_LABELS.password}</span>
 						<input
 							type="password"
 							bind:value={password}
@@ -233,27 +273,27 @@
 					{#if error}<p class="emw-login__error" role="alert">{error}</p>{/if}
 					{#if notice}<p class="emw-login__notice" role="status">{notice}</p>{/if}
 					<button class="emw-login__btn emw-login__btn--primary" type="submit" disabled={busy}>
-						{mode === 'signup' ? 'Sign up' : 'Sign in'}
+						{mode === 'signup' ? (labels.signUp ?? DEFAULT_LABELS.signUp) : (labels.signIn ?? DEFAULT_LABELS.signIn)}
 					</button>
 				</form>
 				<div class="emw-login__switch">
 					{#if mode === 'signin'}
 						<button type="button" class="emw-login__link" onclick={() => (mode = 'lost')}>
-							Forgot your password?
+							{labels.forgotPassword ?? DEFAULT_LABELS.forgotPassword}
 						</button>
 						<button type="button" class="emw-login__link" onclick={() => (mode = 'signup')}>
-							No account yet? Sign up
+							{labels.noAccountSignUp ?? DEFAULT_LABELS.noAccountSignUp}
 						</button>
 					{:else}
 						<button type="button" class="emw-login__link" onclick={() => (mode = 'signin')}>
-							Already registered? Sign in
+							{labels.alreadyRegistered ?? DEFAULT_LABELS.alreadyRegistered}
 						</button>
 					{/if}
 				</div>
 			{/if}
 			{#if providers.length > 0}
-				<div class="emw-login__divider" aria-hidden="true"><span>or continue with</span></div>
-				<div class="emw-login__social" role="group" aria-label="Log in with">
+				<div class="emw-login__divider" aria-hidden="true"><span>{labels.orContinueWith ?? DEFAULT_LABELS.orContinueWith}</span></div>
+				<div class="emw-login__social" role="group" aria-label={labels.loginWithGroup ?? DEFAULT_LABELS.loginWithGroup}>
 					{#each providers as provider (provider.id)}
 						<button
 							type="button"
@@ -261,7 +301,7 @@
 							disabled={busy}
 							onclick={() => onSocial(provider.id)}
 						>
-							Log in with {provider.label}
+							{labels.loginWith?.(provider.label) ?? DEFAULT_LABELS.loginWith(provider.label)}
 						</button>
 					{/each}
 				</div>

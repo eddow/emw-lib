@@ -1,6 +1,6 @@
 /**
  * `defineAsyncWorkflow` — one workflow = one async function
- * (`plans/asyncWF/specs.md` §2; build checklist Phase 0.3).
+ * (see `docs/workflows/README.md`).
  *
  * Client-safe: no `node:` imports, no env reads. Registration is an
  * in-memory map on the deploying bundle; the host tick driver resolves

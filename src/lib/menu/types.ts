@@ -74,7 +74,7 @@ export interface MenuSlotItem {
 /** Left-corner nav entry: a link or a host-owned flyout slot. */
 export type NavItem = MenuLinkItem | MenuSlotItem
 
-/** Per-page tool rendered next to the gear (e.g. emw's CV PDF save link). */
+/** Per-page tool rendered next to the corner trigger (e.g. emw's CV PDF save link). */
 export interface MenuToolItem {
 	/** Stable key. */
 	id: string
@@ -93,11 +93,53 @@ export interface MenuToolItem {
 }
 
 /**
- * Auth entry for the config corner (rendered next to the gear, before the
- * per-page `tools`). Client-safe: the lib never calls better-auth — the
- * host passes a `loginHref` (anonymous) or a `user` + `onSignOut`
- * (signed in). Omit both to hide the entry entirely (e.g. apps without
- * auth yet).
+ * Translated UI strings for `AppMenu`'s own chrome (group labels, theme
+ * row, auth row). Paraglide lives in the host app, never in `emw-lib` —
+ * the host passes its `m.*()` strings (or lambdas over them for the
+ * interpolated ones); English defaults apply otherwise. `nav` / `tools` /
+ * `locales` labels stay host-owned (prebuilt `label` fields).
+ */
+export interface MenuLabels {
+	/** Left-corner nav group (`aria-label`). Default `'Site'`. */
+	site?: string
+	/** Right-corner group + gear trigger. Default `'User preferences'`. */
+	userPreferences?: string
+	/** Auth row group. Default `'Account'`. */
+	account?: string
+	/** Account trigger when signed out. Default `'Account — signed out'`. */
+	accountSignedOut?: string
+	/** Account trigger when signed in. Default `(l) => `Account — signed in as ${l}``. */
+	accountSignedInAs?: (label: string) => string
+	/** Log-in row (`title` + `aria-label` + sr-only). Default `'Log in'`. */
+	login?: string
+	/** Sign-out row sr-only text. Default `'Sign out'`. */
+	signOut?: string
+	/** Sign-out row `title`. Default `(l) => `Signed in as ${l} — sign out``. */
+	signedInTitle?: (label: string) => string
+	/** Sign-out row `aria-label`. Default `(l) => `Sign out (${l})``. */
+	signOutAs?: (label: string) => string
+	/** Language row group. Default `'Language'`. */
+	language?: string
+	/** Theme row group. Default `'Theme'`. */
+	theme?: string
+	/** Light button `title`. Default `'Light theme'`. */
+	lightTheme?: string
+	/** Light button sr-only text. Default `'Light'`. */
+	light?: string
+	/** Dark button `title`. Default `'Dark theme'`. */
+	darkTheme?: string
+	/** Dark button sr-only text. Default `'Dark'`. */
+	dark?: string
+}
+
+/**
+ * Auth state for the config corner. When passed, the corner trigger shows
+ * the account status (`🔑` signed out, `👤` signed in) instead of the gear,
+ * and the first menu row is the log-in link (anonymous + `loginHref`) or
+ * the sign-out button (signed-in `user` + `onSignOut`), with matching icons.
+ * Client-safe: the lib never calls better-auth — the host passes a
+ * `loginHref` (anonymous) or a `user` + `onSignOut` (signed in). Omit the
+ * whole prop for the plain gear (e.g. apps without auth yet).
  */
 export interface MenuAuthState {
 	/** Signed-in display name (`name ?? email`). Omit when anonymous. */

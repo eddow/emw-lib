@@ -1,6 +1,6 @@
 /**
  * asyncWF shared types — the workflow authoring surface
- * (`plans/asyncWF/specs.md` §2; build checklist Phase 0.1).
+ * (see `docs/workflows/README.md`).
  *
  * Client-safe: no `node:` imports, no env reads. Both workflow code and host
  * tick drivers program against these shapes.

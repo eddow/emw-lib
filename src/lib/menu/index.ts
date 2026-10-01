@@ -14,6 +14,7 @@ export {
 	isMenuSlot,
 	type LocaleOption,
 	type MenuAuthState,
+	type MenuLabels,
 	type MenuLinkItem,
 	type MenuSlotItem,
 	type MenuToolItem,

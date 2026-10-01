@@ -8,11 +8,22 @@
 	let {
 		toolCallId,
 		answered = null,
-		onanswer = null
+		onanswer = null,
+		labels = {}
 	}: {
 		toolCallId: string
 		answered?: unknown
 		onanswer?: ((value: unknown) => Promise<void> | void) | null
+		/**
+		 * Translated UI strings. Paraglide lives in the host — pass
+		 * `m.*()` strings here; English defaults apply otherwise.
+		 */
+		labels?: Partial<{
+			answerAsJson: string
+			answer: string
+			answering: string
+			invalidJson: string
+		}>
 	} = $props()
 
 	let raw = $state('{}')
@@ -26,7 +37,7 @@
 		try {
 			value = JSON.parse(raw)
 		} catch {
-			error = 'invalid JSON'
+			error = labels.invalidJson ?? 'invalid JSON'
 			return
 		}
 		sending = true
@@ -49,7 +60,7 @@
 			data-testid="alfred-human-json-input"
 			bind:value={raw}
 			rows={3}
-			aria-label="Answer as JSON"
+			aria-label={labels.answerAsJson ?? 'Answer as JSON'}
 		></textarea>
 		<button
 			type="button"
@@ -57,7 +68,7 @@
 			disabled={sending}
 			onclick={() => void submit()}
 		>
-			{sending ? 'Answering…' : 'Answer'}
+			{sending ? (labels.answering ?? 'Answering…') : (labels.answer ?? 'Answer')}
 		</button>
 	{/if}
 	{#if error}

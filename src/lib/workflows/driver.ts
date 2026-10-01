@@ -1,6 +1,6 @@
 /**
  * asyncWF tick driver — replay + suspend core
- * (`plans/asyncWF/specs.md` §§3–4; checklist Phases 2–3). Server-only:
+ * (see `docs/workflows/README.md`). Server-only:
  * import via `emw-lib/workflows-server`, never from browser code or the
  * client-safe barrel (same split as `emw-lib/db-server`).
  *

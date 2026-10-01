@@ -89,7 +89,9 @@ describe('Chat', () => {
 			await input.fill('Hi Alfred')
 			await screen.getByTestId('alfred-chat-send').click()
 			await vi.waitFor(() => {
-				expect(onsend).toHaveBeenCalledWith('Hi Alfred')
+				// Stream completed (done → idle), so the next send creates
+				// a new generation via `prompt`, not `queue`.
+				expect(onsend).toHaveBeenCalledWith('Hi Alfred', 'prompt')
 			})
 		} finally {
 			net.restore()
@@ -214,5 +216,331 @@ describe('Chat', () => {
 		} finally {
 			globalThis.fetch = origFetch
 		}
+	})
+
+	it('renders markdown in assistant answers', async () => {
+		const net = installFetch('**bold** and `code`')
+		try {
+			const screen = await render(ChatTestHost, { credential: CRED })
+			const messages = screen.getByTestId('alfred-chat-messages')
+			await expect.element(messages).toHaveTextContent('bold')
+			await vi.waitFor(() => {
+				expect(messages.element().querySelector('strong')?.textContent).toBe('bold')
+			})
+			expect(messages.element().querySelector('code')?.textContent).toBe('code')
+		} finally {
+			net.restore()
+		}
+	})
+
+	it('collapses a paired tool_use→tool_result into one row with details', async () => {
+		const screen = await render(ChatTestHost, {
+			credential: null,
+			history: [
+				{
+					kind: 'event',
+					seq: 1,
+					type: 'tool_use',
+					payload: { tool_call_id: 'c1', name: 'search', arguments: { q: 'x' } },
+					ts: 't',
+				},
+				{
+					kind: 'event',
+					seq: 2,
+					type: 'tool_result',
+					payload: { tool_call_id: 'c1', name: 'search', output: 'found it' },
+					ts: 't',
+				},
+			],
+		})
+		const row = screen.getByTestId('alfred-tool-call')
+		await expect.element(row).toBeVisible()
+		await expect.element(row).toHaveTextContent('search')
+		await expect.element(screen.getByTestId('alfred-tool-settled')).toBeVisible()
+		// Full args/output live in the expandable details.
+		await expect.element(row).toHaveTextContent('found it')
+	})
+
+	it('renders superseded/archived as a status line, stop as nothing', async () => {
+		const screen = await render(ChatTestHost, {
+			credential: null,
+			history: [
+				{ kind: 'event', seq: 1, type: 'done', payload: { reason: 'stop' }, ts: 't' },
+				{ kind: 'event', seq: 2, type: 'done', payload: { reason: 'superseded' }, ts: 't' },
+				{ kind: 'event', seq: 3, type: 'done', payload: { reason: 'archived' }, ts: 't' },
+			],
+		})
+		const lines = screen.getByTestId('alfred-status-line')
+		await expect.element(lines.first()).toBeVisible()
+		await expect.element(screen.getByTestId('alfred-chat-messages')).toHaveTextContent('Superseded')
+		await expect.element(screen.getByTestId('alfred-chat-messages')).toHaveTextContent('archived')
+	})
+
+	it('renders max_iterations as a retry box; Try-again calls onretry', async () => {
+		const onretry = vi.fn()
+		const { buildTranscript } = await import('./transcript.js')
+		// Sanity: the transcript layer maps done/max_iterations → retry.
+		const msgs = buildTranscript(
+			[
+				{
+					kind: 'event',
+					seq: 1,
+					type: 'answer',
+					payload: { text: 'partial work' },
+					ts: 't',
+				},
+				{ kind: 'event', seq: 2, type: 'done', payload: { reason: 'max_iterations' }, ts: 't' },
+			],
+			[]
+		)
+		expect(msgs.some((m) => m.kind === 'retry')).toBe(true)
+		const screen = await render(ChatTestHost, {
+			credential: null,
+			history: [
+				{
+					kind: 'event',
+					seq: 1,
+					type: 'answer',
+					payload: { text: 'partial work' },
+					ts: 't',
+				},
+				{ kind: 'event', seq: 2, type: 'done', payload: { reason: 'max_iterations' }, ts: 't' },
+			],
+			onretry,
+		})
+		const box = screen.getByTestId('alfred-retry-box')
+		await expect.element(box).toBeVisible()
+		await screen.getByTestId('alfred-retry-button').click()
+		await vi.waitFor(() => {
+			expect(onretry).toHaveBeenCalledTimes(1)
+		})
+		// Clicking dismisses the box (poll: the locator detaches on dismiss).
+		await vi.waitFor(() => {
+			expect(screen.getByTestId('alfred-retry-box').elements().length).toBe(0)
+		})
+	})
+
+	it('renders a rate-limit error with a snail countdown', async () => {
+		const screen = await render(ChatTestHost, {
+			credential: null,
+			history: [
+				{
+					kind: 'event',
+					seq: 1,
+					type: 'error',
+					payload: { error: 'Rate limited: wait 60 seconds then try again' },
+					ts: 't',
+				},
+			],
+		})
+		await expect.element(screen.getByTestId('alfred-retry-box')).toBeVisible()
+		await expect.element(screen.getByTestId('alfred-retry-countdown')).toBeVisible()
+		await expect.element(screen.getByTestId('alfred-retry-box')).toHaveTextContent('🐌')
+	})
+
+	it('passes the picked combo-button mode to onsend', async () => {
+		const encoder = new TextEncoder()
+		const origFetch = globalThis.fetch
+		// Hold the SSE stream open: steer/interrupt only exist while live.
+		globalThis.fetch = (async (input: RequestInfo | URL, _init?: RequestInit) => {
+			const url = String(input)
+			if (url.includes('/streams/gen_1')) {
+				const body = new ReadableStream({
+					start(controller) {
+						controller.enqueue(
+							encoder.encode(
+								`event: answer_delta\ndata: ${JSON.stringify({ stream_id: 'gen_1', stream_seq: 1, text: 'Hel' })}\n\n`
+							)
+						)
+						// Never close — the generation stays live so the
+						// queue/steer/interrupt modes are offered.
+					},
+				})
+				return new Response(body, { status: 200 })
+			}
+			return Response.json({ ok: true })
+		}) as unknown as typeof fetch
+		try {
+			const onsend = vi.fn(async (_prompt: string, _mode?: string) => null)
+			const screen = await render(ChatTestHost, { credential: CRED, onsend })
+			await screen.getByTestId('alfred-chat-mode-toggle').click()
+			await screen.getByTestId('alfred-chat-mode-steer').click()
+			const input = screen.getByTestId('alfred-chat-input')
+			await input.fill('nudge')
+			await screen.getByTestId('alfred-chat-send').click()
+			await vi.waitFor(() => {
+				expect(onsend).toHaveBeenCalledWith('nudge', 'steer')
+			})
+		} finally {
+			globalThis.fetch = origFetch
+		}
+	})
+
+	it('sends queue while live, prompt once the stream settles', async () => {
+		const encoder = new TextEncoder()
+		const origFetch = globalThis.fetch
+		// Same held-open stream: plain Enter uses the live default `queue`.
+		globalThis.fetch = (async (input: RequestInfo | URL, _init?: RequestInit) => {
+			const url = String(input)
+			if (url.includes('/streams/gen_1')) {
+				const body = new ReadableStream({
+					start(controller) {
+						controller.enqueue(
+							encoder.encode(
+								`event: answer_delta\ndata: ${JSON.stringify({ stream_id: 'gen_1', stream_seq: 1, text: 'Hel' })}\n\n`
+							)
+						)
+						// Never close — stays live.
+					},
+				})
+				return new Response(body, { status: 200 })
+			}
+			return Response.json({ ok: true })
+		}) as unknown as typeof fetch
+		try {
+			const onsend = vi.fn(async (_prompt: string, _mode?: string) => null)
+			const screen = await render(ChatTestHost, { credential: CRED, onsend })
+			await expect.element(screen.getByTestId('alfred-chat-send')).toHaveTextContent('queue')
+			const input = screen.getByTestId('alfred-chat-input')
+			await input.fill('follow-up')
+			await screen.getByTestId('alfred-chat-send').click()
+			await vi.waitFor(() => {
+				expect(onsend).toHaveBeenCalledWith('follow-up', 'queue')
+			})
+		} finally {
+			globalThis.fetch = origFetch
+		}
+	})
+
+	it('offers prompt only when idle (no queue/steer/interrupt)', async () => {
+		const screen = await render(ChatTestHost, {
+			credential: null,
+			history: [],
+		})
+		await expect.element(screen.getByTestId('alfred-chat-send')).toHaveTextContent('prompt')
+		// Single valid mode → no dropdown toggle.
+		await vi.waitFor(() => {
+			expect(screen.getByTestId('alfred-chat-mode-toggle').elements().length).toBe(0)
+		})
+	})
+
+	it('Stop button calls onstop', async () => {
+		const encoder = new TextEncoder()
+		const origFetch = globalThis.fetch
+		// Hold the SSE stream open: the Stop button only shows while streaming.
+		globalThis.fetch = (async (input: RequestInfo | URL, _init?: RequestInit) => {
+			const url = String(input)
+			if (url.includes('/streams/gen_1')) {
+				const body = new ReadableStream({
+					start(controller) {
+						controller.enqueue(
+							encoder.encode(
+								`event: answer_delta\ndata: ${JSON.stringify({ stream_id: 'gen_1', stream_seq: 1, text: 'Hel' })}\n\n`
+							)
+						)
+						// Never close — the component disposes it on Stop/unmount.
+					},
+				})
+				return new Response(body, { status: 200 })
+			}
+			return Response.json({ ok: true })
+		}) as unknown as typeof fetch
+		try {
+			const onstop = vi.fn()
+			const screen = await render(ChatTestHost, { credential: CRED, onstop })
+			await expect.element(screen.getByTestId('alfred-chat-stop')).toBeVisible()
+			await screen.getByTestId('alfred-chat-stop').click()
+			await vi.waitFor(() => {
+				expect(onstop).toHaveBeenCalledTimes(1)
+			})
+		} finally {
+			globalThis.fetch = origFetch
+		}
+	})
+
+	it('renders translated composer + forwarded labels', async () => {
+		const screen = await render(ChatTestHost, {
+			credential: null,
+			history: [],
+			labels: {
+				empty: 'Aucun message.',
+				message: 'Message-fr',
+				sending: 'Envoi…',
+				sendMode: (m: string) => `Envoyer (${m})`,
+				stop: 'Arrêter',
+			},
+			retryLabels: { keepRetry: 'Continuer', dismiss: 'Ignorer' },
+			toolLabels: { arguments: 'Arguments-fr', output: 'Sortie' },
+		})
+		await expect
+			.element(screen.getByTestId('alfred-chat-empty'))
+			.toHaveTextContent('Aucun message.')
+		await expect
+			.element(screen.getByTestId('alfred-chat-send'))
+			.toHaveTextContent('Envoyer (prompt)')
+	})
+
+	it('renders settled thoughts as a collapsed Thoughts row when showThought', async () => {
+		const screen = await render(ChatTestHost, {
+			credential: null,
+			history: [{ kind: 'event', seq: 1, type: 'thought', payload: { text: 'hmm ok' }, ts: 't' }],
+			showThought: true,
+		})
+		const row = screen.getByTestId('alfred-thought-row')
+		await expect.element(row).toBeVisible()
+		await expect.element(row).toHaveTextContent('Thoughts')
+		await expect.element(screen.getByTestId('alfred-thought-settled')).toBeVisible()
+		// Full text lives in the expandable details.
+		await expect.element(row).toHaveTextContent('hmm ok')
+	})
+
+	it('hides thoughts unless showThought', async () => {
+		const screen = await render(ChatTestHost, {
+			credential: null,
+			history: [{ kind: 'event', seq: 1, type: 'thought', payload: { text: 'hmm ok' }, ts: 't' }],
+			showThought: false,
+		})
+		await expect.element(screen.getByTestId('alfred-chat-messages')).not.toHaveTextContent('hmm ok')
+	})
+
+	it('renders the streaming thought draft expanded when showThought', async () => {
+		const encoder = new TextEncoder()
+		const origFetch = globalThis.fetch
+		// Hold the SSE stream open with a thought delta: live draft, no durable event yet.
+		globalThis.fetch = (async (input: RequestInfo | URL, _init?: RequestInit) => {
+			const url = String(input)
+			if (url.includes('/streams/gen_1')) {
+				const body = new ReadableStream({
+					start(controller) {
+						controller.enqueue(
+							encoder.encode(
+								`event: thought_delta\ndata: ${JSON.stringify({ type: 'thought_delta', stream_id: 'gen_1', stream_seq: 1, text: 'reasoning…' })}\n\n`
+							)
+						)
+						// Never close — the draft stays live.
+					},
+				})
+				return new Response(body, { status: 200 })
+			}
+			return Response.json({ ok: true })
+		}) as unknown as typeof fetch
+		try {
+			const screen = await render(ChatTestHost, { credential: CRED, showThought: true })
+			const live = screen.getByTestId('alfred-thought-live')
+			await expect.element(live).toBeVisible()
+			await expect.element(live).toHaveTextContent('reasoning…')
+		} finally {
+			globalThis.fetch = origFetch
+		}
+	})
+
+	it('renders translated thought labels', async () => {
+		const screen = await render(ChatTestHost, {
+			credential: null,
+			history: [{ kind: 'event', seq: 1, type: 'thought', payload: { text: 'hmm ok' }, ts: 't' }],
+			showThought: true,
+			thoughtLabels: { thoughts: 'Réflexions' },
+		})
+		await expect.element(screen.getByTestId('alfred-thought-row')).toHaveTextContent('Réflexions')
 	})
 })

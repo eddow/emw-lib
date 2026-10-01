@@ -268,6 +268,26 @@ export class MenuPreferences {
 		this.onLocaleChange?.(locale)
 	}
 
+	/**
+	 * Adopt an externally-owned locale (controlled `currentLocale` prop
+	 * catching up) without persisting or firing callbacks — the host
+	 * already owns persistence + navigation for its own state.
+	 */
+	syncLocale(locale: string): void {
+		if (!this.locales.includes(locale)) return
+		this.#currentLocale = locale
+	}
+
+	/**
+	 * Adopt an externally-owned theme (controlled `userTheme` prop
+	 * catching up) without persisting or firing callbacks. Applies to
+	 * the DOM so first paint stays in sync.
+	 */
+	syncTheme(theme: Theme): void {
+		this.#userTheme = theme
+		if (isBrowser()) applyMenuTheme(this.effectiveTheme)
+	}
+
 	/** Detach the `prefers-color-scheme` listener (call from `$effect` cleanup). */
 	dispose(): void {
 		this.#mediaCleanup?.()

@@ -17,7 +17,8 @@
 		answered = null,
 		autopicked = false,
 		timed_out = false,
-		onanswer = null
+		onanswer = null,
+		labels = {}
 	}: {
 		questions: HumanQuestion[]
 		/** Pre-filled answers (receipt / history replay). Disables the card. */
@@ -26,6 +27,17 @@
 		timed_out?: boolean
 		/** Called once with the answers for all questions. */
 		onanswer?: ((answers: HumanAnswer[]) => Promise<void> | void) | null
+		/**
+		 * Translated UI strings. Paraglide lives in the host — pass
+		 * `m.*()` strings here; English defaults apply otherwise.
+		 */
+		labels?: Partial<{
+			freeTextPlaceholder: string
+			autopicked: string
+			timedOut: string
+			answer: string
+			answering: string
+		}>
 	} = $props()
 
 	const receiptById = $derived(new Map((answered ?? []).map((a) => [a.id, a] as const)))
@@ -109,14 +121,14 @@
 					type="text"
 					data-testid="alfred-human-freetext"
 					data-question={q.id}
-					placeholder="Or type your own answer…"
+					placeholder={labels.freeTextPlaceholder ?? 'Or type your own answer…'}
 					bind:value={texts[q.id]}
 					disabled={disabled || sending}
 				/>
 			{/if}
 			{#if i === 0 && (autopicked || timed_out)}
 				<p class="alfred-human-badge" data-testid="alfred-human-badge">
-					{autopicked ? 'auto-picked default' : 'timed out'}
+					{autopicked ? (labels.autopicked ?? 'auto-picked default') : (labels.timedOut ?? 'timed out')}
 				</p>
 			{/if}
 		</fieldset>
@@ -129,7 +141,7 @@
 			disabled={!ready || sending}
 			onclick={() => void submit()}
 		>
-			{sending ? 'Answering…' : 'Answer'}
+			{sending ? (labels.answering ?? 'Answering…') : (labels.answer ?? 'Answer')}
 		</button>
 	{/if}
 

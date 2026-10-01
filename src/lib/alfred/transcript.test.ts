@@ -1,23 +1,120 @@
 import { describe, expect, it } from 'vitest'
-import { buildTranscript, eventsToMessages, historyToMessages } from './transcript.js'
+import {
+	buildTranscript,
+	eventsToMessages,
+	historyToMessages,
+	parseRetryAfterS,
+} from './transcript.js'
 import type { HistoryItem, LiveEvent } from './types.js'
 
 describe('historyToMessages', () => {
-	it('renders user/assistant/tool messages and skips empty ones', () => {
+	it('renders user messages and skips empty ones', () => {
 		const history: HistoryItem[] = [
 			{ kind: 'message', seq: 1, role: 'user', content: 'Hello' },
-			{ kind: 'message', seq: 2, role: 'assistant', content: 'Hi there' },
-			{ kind: 'message', seq: 3, role: 'tool', content: { tool_call_id: 'c1', content: 'ok' } },
-			{ kind: 'message', seq: 4, role: 'user', content: '' },
+			{ kind: 'message', seq: 2, role: 'user', content: '' },
 		]
 		const out = historyToMessages(history)
-		expect(out).toHaveLength(3)
+		expect(out).toHaveLength(1)
 		expect(out[0]).toMatchObject({ role: 'user', text: 'Hello' })
-		expect(out[1]).toMatchObject({ role: 'assistant', text: 'Hi there' })
-		expect(out[2]).toMatchObject({ role: 'tool', text: 'ok' })
 	})
 
-	it('renders event items (answer, tool_use, done, error)', () => {
+	it('dedups tool messages covered by a tool_result event', () => {
+		const history: HistoryItem[] = [
+			{ kind: 'message', seq: 1, role: 'tool', content: { tool_call_id: 'c1', content: 'ok' } },
+			{
+				kind: 'event',
+				seq: 1,
+				type: 'tool_use',
+				payload: { tool_call_id: 'c1', name: 'search', arguments: { q: 'x' } },
+				ts: 't',
+			},
+			{
+				kind: 'event',
+				seq: 2,
+				type: 'tool_result',
+				payload: { tool_call_id: 'c1', name: 'search', output: 'ok' },
+				ts: 't',
+			},
+		]
+		const out = historyToMessages(history)
+		expect(out).toHaveLength(1)
+		expect(out[0]).toMatchObject({ kind: 'tool_call', pending: false })
+	})
+
+	it('keeps orphan tool messages with no matching tool_result event', () => {
+		const history: HistoryItem[] = [
+			{ kind: 'message', seq: 1, role: 'tool', content: { tool_call_id: 'c9', content: 'ok' } },
+		]
+		const out = historyToMessages(history)
+		expect(out).toHaveLength(1)
+		expect(out[0]).toMatchObject({ role: 'tool', text: 'ok' })
+	})
+
+	it('dedups final assistant messages covered by an answer event', () => {
+		const history: HistoryItem[] = [
+			{ kind: 'message', seq: 1, role: 'assistant', content: 'final' },
+			{ kind: 'event', seq: 1, type: 'answer', payload: { text: 'final' }, ts: 't' },
+		]
+		const out = historyToMessages(history)
+		expect(out).toHaveLength(1)
+		expect(out[0]).toMatchObject({ role: 'assistant', text: 'final' })
+	})
+
+	it('drops empty assistant tool_calls shells, keeps non-empty preambles', () => {
+		const history: HistoryItem[] = [
+			{
+				kind: 'message',
+				seq: 1,
+				role: 'assistant',
+				content: { content: '', tool_calls: [{ id: 'c1' }] },
+			},
+			{
+				kind: 'message',
+				seq: 2,
+				role: 'assistant',
+				content: { content: 'let me look', tool_calls: [{ id: 'c2' }] },
+			},
+		]
+		const out = historyToMessages(history)
+		expect(out).toHaveLength(1)
+		expect(out[0]).toMatchObject({ role: 'assistant', text: 'let me look' })
+	})
+
+	it('renders durable history without duplicating the live stream replay', () => {
+		// Realistic history: every assistant/tool write lands in BOTH the
+		// messages table (LLM replay) and the events table (display log).
+		const history: HistoryItem[] = [
+			{ kind: 'message', seq: 1, role: 'user', content: 'lookup x' },
+			{
+				kind: 'message',
+				seq: 2,
+				role: 'assistant',
+				content: { content: '', tool_calls: [{ id: 'c1' }] },
+			},
+			{
+				kind: 'event',
+				seq: 1,
+				type: 'tool_use',
+				payload: { tool_call_id: 'c1', name: 'search', arguments: { q: 'x' } },
+				ts: 't',
+			},
+			{ kind: 'message', seq: 3, role: 'tool', content: { tool_call_id: 'c1', content: 'found' } },
+			{
+				kind: 'event',
+				seq: 2,
+				type: 'tool_result',
+				payload: { tool_call_id: 'c1', name: 'search', output: 'found' },
+				ts: 't',
+			},
+			{ kind: 'message', seq: 4, role: 'assistant', content: 'done: found' },
+			{ kind: 'event', seq: 3, type: 'answer', payload: { text: 'done: found' }, ts: 't' },
+		]
+		const out = historyToMessages(history)
+		expect(out.map((m) => m.text)).toEqual(['lookup x', 'search — found', 'done: found'])
+		expect(out.filter((m) => m.kind === 'tool_call')).toHaveLength(1)
+	})
+
+	it('renders event items (answer, tool_use, done/stop→null, error→retry)', () => {
 		const history: HistoryItem[] = [
 			{
 				kind: 'event',
@@ -37,34 +134,119 @@ describe('historyToMessages', () => {
 			{ kind: 'event', seq: 4, type: 'error', payload: { error: 'boom' }, ts: 't' },
 		]
 		const out = historyToMessages(history)
-		expect(out.map((m) => m.role)).toEqual(['assistant', 'tool', 'system', 'system'])
+		// `stop` renders nothing (plan §1.2).
+		expect(out.map((m) => m.role)).toEqual(['assistant', 'tool', 'system'])
 		expect(out[0].text).toBe('final')
+		expect(out[1]).toMatchObject({ kind: 'tool_call', pending: true })
 		expect(out[1].text).toContain('search')
-		expect(out[2].text).toContain('stop')
-		expect(out[3].text).toContain('boom')
+		expect(out[1].tool).toMatchObject({ toolCallId: 'c1', toolName: 'search', pending: true })
+		expect(out[2]).toMatchObject({ kind: 'retry' })
+		expect(out[2].text).toContain('boom')
 	})
 
-	it('marks thought events so the UI can hide them', () => {
+	it('pairs tool_use→tool_result by tool_call_id into one settled message', () => {
+		const history: HistoryItem[] = [
+			{
+				kind: 'event',
+				seq: 1,
+				type: 'tool_use',
+				payload: { tool_call_id: 'c1', name: 'search', arguments: { q: 'x' } },
+				ts: 't',
+			},
+			{
+				kind: 'event',
+				seq: 2,
+				type: 'tool_result',
+				payload: { tool_call_id: 'c1', name: 'search', output: 'found it' },
+				ts: 't',
+			},
+		]
+		const out = historyToMessages(history)
+		expect(out).toHaveLength(1)
+		expect(out[0]).toMatchObject({ kind: 'tool_call', pending: false })
+		expect(out[0].tool).toMatchObject({
+			toolCallId: 'c1',
+			toolName: 'search',
+			pending: false,
+		})
+		expect(out[0].tool?.argsText).toContain('x')
+		expect(out[0].tool?.outputText).toContain('found it')
+	})
+
+	it('keeps an unpaired tool_use pending (still running)', () => {
+		const history: HistoryItem[] = [
+			{
+				kind: 'event',
+				seq: 1,
+				type: 'tool_use',
+				payload: { tool_call_id: 'c1', name: 'search', arguments: { q: 'x' } },
+				ts: 't',
+			},
+		]
+		const out = historyToMessages(history)
+		expect(out).toHaveLength(1)
+		expect(out[0]).toMatchObject({ kind: 'tool_call', pending: true })
+		expect(out[0].tool).toMatchObject({ pending: true })
+	})
+
+	it('maps done reasons: stop→null, superseded/archived→status, max_iterations→retry', () => {
+		const reasons = ['stop', 'superseded', 'archived', 'max_iterations'] as const
+		const history: HistoryItem[] = reasons.map((reason, i) => ({
+			kind: 'event',
+			seq: i + 1,
+			type: 'done',
+			payload: { reason },
+			ts: 't',
+		}))
+		const out = historyToMessages(history)
+		expect(out).toHaveLength(3)
+		expect(out[0]).toMatchObject({ kind: 'status', status: { reason: 'superseded' } })
+		expect(out[1]).toMatchObject({ kind: 'status', status: { reason: 'archived' } })
+		expect(out[2]).toMatchObject({ kind: 'retry', retry: { reason: 'max_iterations' } })
+	})
+
+	it('parses an explicit wait-N-seconds hint, nothing otherwise', () => {
+		expect(parseRetryAfterS('Rate limited: wait 60 seconds then try again')).toBe(60)
+		expect(parseRetryAfterS('wait 5 secs and retry')).toBe(5)
+		expect(parseRetryAfterS('boom')).toBeUndefined()
+		expect(parseRetryAfterS('')).toBeUndefined()
+	})
+
+	it('maps error with a wait hint to retry with retryAfterS', () => {
+		const history: HistoryItem[] = [
+			{
+				kind: 'event',
+				seq: 1,
+				type: 'error',
+				payload: { error: 'Rate limited: wait 60 seconds then try again' },
+				ts: 't',
+			},
+		]
+		const out = historyToMessages(history)
+		expect(out).toHaveLength(1)
+		expect(out[0]).toMatchObject({ kind: 'retry', retry: { reason: 'error', retryAfterS: 60 } })
+	})
+
+	it('marks thought events with kind thought so the UI can hide them', () => {
 		const history: HistoryItem[] = [
 			{ kind: 'event', seq: 1, type: 'thought', payload: { text: 'hmm' }, ts: 't' },
 		]
 		const out = historyToMessages(history)
 		expect(out).toHaveLength(1)
-		expect(out[0]).toMatchObject({ role: 'assistant', thought: true, text: 'hmm' })
+		expect(out[0]).toMatchObject({ role: 'assistant', thought: true, kind: 'thought', text: 'hmm' })
 	})
 })
 
 describe('eventsToMessages', () => {
-	it('skips deltas and renders durable events', () => {
+	it('skips deltas and renders durable events (done/stop→null)', () => {
 		const events: LiveEvent[] = [
 			{ type: 'answer_delta', stream_id: 's1', stream_seq: 1, text: 'Hel' },
 			{ seq: 3, type: 'answer', payload: { text: 'Hello' }, ts: 't' },
 			{ seq: 4, type: 'done', payload: { reason: 'stop' }, ts: 't' },
 		]
 		const out = eventsToMessages(events)
-		expect(out).toHaveLength(2)
+		expect(out).toHaveLength(1)
 		expect(out[0]).toMatchObject({ role: 'assistant', text: 'Hello', seq: 3 })
-		expect(out[1]).toMatchObject({ role: 'system', seq: 4 })
 	})
 
 	it('skips durable events without a seq', () => {
@@ -94,6 +276,62 @@ describe('buildTranscript', () => {
 
 	it('omits the draft when there is none', () => {
 		expect(buildTranscript([], [])).toEqual([])
+	})
+
+	it('drops live events already covered by history (SSE replay from after_seq=0)', () => {
+		const use = {
+			kind: 'event',
+			seq: 1,
+			type: 'tool_use',
+			payload: { tool_call_id: 'c1', name: 'search', arguments: { q: 'x' } },
+			ts: 't',
+		} as const
+		const result = {
+			kind: 'event',
+			seq: 2,
+			type: 'tool_result',
+			payload: { tool_call_id: 'c1', name: 'search', output: 'found' },
+			ts: 't',
+		} as const
+		const answer = {
+			kind: 'event',
+			seq: 3,
+			type: 'answer',
+			payload: { text: 'done' },
+			ts: 't',
+		} as const
+		const history: HistoryItem[] = [
+			{ kind: 'message', seq: 1, role: 'user', content: 'lookup x' },
+			use,
+			result,
+			answer,
+		]
+		const events: LiveEvent[] = [
+			{ seq: 1, type: 'tool_use', payload: { ...use.payload }, ts: 't' },
+			{ seq: 2, type: 'tool_result', payload: { ...result.payload }, ts: 't' },
+			{ seq: 3, type: 'answer', payload: { ...answer.payload }, ts: 't' },
+		]
+		const out = buildTranscript(history, events)
+		expect(out.map((m) => m.text)).toEqual(['lookup x', 'search — found', 'done'])
+		expect(out.filter((m) => m.kind === 'tool_call')).toHaveLength(1)
+	})
+
+	it('keeps live events that history does not cover (new work after load)', () => {
+		const history: HistoryItem[] = [
+			{ kind: 'message', seq: 1, role: 'user', content: 'lookup x' },
+			{
+				kind: 'event',
+				seq: 1,
+				type: 'answer',
+				payload: { text: 'old answer' },
+				ts: 't',
+			},
+		]
+		const events: LiveEvent[] = [
+			{ seq: 2, type: 'answer', payload: { text: 'new answer' }, ts: 't' },
+		]
+		const out = buildTranscript(history, events)
+		expect(out.map((m) => m.text)).toEqual(['lookup x', 'old answer', 'new answer'])
 	})
 
 	it('maps human_question to a human message with structured payload', () => {

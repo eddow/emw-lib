@@ -87,8 +87,8 @@ function assertQuestions(questions: JevDecideInput['questions']): void {
 	for (const id of ids) {
 		const q = (questions as Record<string, JevQuestion>)[id]
 		if (!q || typeof q !== 'object') invalid(`questions[${JSON.stringify(id)}] must be an object`)
-		if (q.type !== 'noul' && q.type !== 'choice')
-			invalid(`questions[${JSON.stringify(id)}].type must be 'noul' or 'choice'`)
+		if (q.type !== 'noul' && q.type !== 'choice' && q.type !== 'score')
+			invalid(`questions[${JSON.stringify(id)}].type must be 'noul', 'choice' or 'score' (score = Laya-only)`) 
 		if (typeof q.instructions !== 'string' || q.instructions.trim() === '')
 			invalid(`questions[${JSON.stringify(id)}].instructions must be a non-empty string`)
 	}

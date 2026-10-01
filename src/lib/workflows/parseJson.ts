@@ -1,6 +1,6 @@
 /**
  * `wf.parseJson` — deterministic extraction + parse + validation
- * (`plans/asyncWF/specs.md` §2.2; checklist Phase 4.5).
+ * (see `docs/workflows/README.md`).
  *
  * Client-safe: no `node:` imports, no env reads. Pure and deterministic —
  * safe in workflow code, re-runs every tick identically. No `Date`,

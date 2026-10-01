@@ -108,6 +108,69 @@ export function credentialFlows(allowlist: string | undefined | null): {
 	return { emailPassword: ids.has('email'), passkey: ids.has('passkey') }
 }
 
+/**
+ * Translated UI strings for `LoginScreen`. Paraglide lives in the host
+ * app, never in `emw-lib` — the host passes its `m.*()` strings (or
+ * lambdas over them for the interpolated one); English defaults apply
+ * otherwise.
+ */
+export interface LoginLabels {
+	/** Card `aria-label` + social group `aria-label` suffix. Default `'Log in'`. */
+	login?: string
+	/** Reset-mode heading. Default `'Choose a new password'`. */
+	chooseNewPassword?: string
+	/** Reset-mode subheading. Default `'Enter your new password below.'`. */
+	enterNewPassword?: string
+	/** Reset-mode field label. Default `'New password'`. */
+	newPassword?: string
+	/** Reset-mode submit. Default `'Update password'`. */
+	updatePassword?: string
+	/** Lost-mode heading. Default `'Reset your password'`. */
+	resetPassword?: string
+	/** Lost-mode subheading. Default `"We'll email you a reset link."`. */
+	emailResetLink?: string
+	/** Lost-mode submit. Default `'Send reset link'`. */
+	sendResetLink?: string
+	/** Sign-in heading. Default `'Welcome back'`. */
+	welcomeBack?: string
+	/** Sign-in subheading. Default `'Sign in to your account to continue.'`. */
+	signInContinue?: string
+	/** Sign-up heading. Default `'Create your account'`. */
+	createAccount?: string
+	/** Sign-up subheading. Default `'Create your account to get started.'`. */
+	createAccountIntro?: string
+	/** Field label. Default `'Name'`. */
+	name?: string
+	/** Field label. Default `'Email'`. */
+	email?: string
+	/** Field label. Default `'Password'`. */
+	password?: string
+	/** Sign-up submit. Default `'Sign up'`. */
+	signUp?: string
+	/** Sign-in submit. Default `'Sign in'`. */
+	signIn?: string
+	/** Mode-switch link. Default `'Forgot your password?'`. */
+	forgotPassword?: string
+	/** Mode-switch link. Default `'No account yet? Sign up'`. */
+	noAccountSignUp?: string
+	/** Mode-switch link. Default `'Already registered? Sign in'`. */
+	alreadyRegistered?: string
+	/** Mode-switch link. Default `'Back to sign in'`. */
+	backToSignIn?: string
+	/** Divider text. Default `'or continue with'`. */
+	orContinueWith?: string
+	/** Social buttons group `aria-label`. Default `'Log in with'`. */
+	loginWithGroup?: string
+	/** Social button. Default `(l) => `Log in with ${l}``. */
+	loginWith?: (providerLabel: string) => string
+	/** Generic failure (auth error without a message). Default `'Something went wrong'`. */
+	somethingWrong?: string
+	/** Reset-request notice. Default `'Check your inbox for the reset link.'`. */
+	checkInbox?: string
+	/** Reset-confirm notice. Default `'Password updated — sign in with your new password.'`. */
+	passwordUpdated?: string
+}
+
 /** True when the user carries at least one of the required roles. */
 export function hasRole(
 	user: Pick<AuthUser, 'roles'> | null | undefined,

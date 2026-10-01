@@ -312,23 +312,125 @@ export function eventMessage(
  * Message and event `seq` spaces are independent (`butler/alfred.md` §6), so
  * ids use the item index, not `seq`. `tool_use`→`tool_result` pairs (by
  * `tool_call_id`) are merged into a single `tool_call` message.
+ *
+ * Dedup rule: the `messages` table is the LLM replay log, the `events` table
+ * is the display log — every assistant/tool write lands in BOTH (runner
+ * writes the message row then the event row). Rendering both duplicates every
+ * tool call (`tool` message ≈ `tool_result` output) and every final answer
+ * (assistant message ≈ `answer` text). So:
+ * - `tool` messages are skipped when a `tool_result` event with the same
+ *   `tool_call_id` exists (orphans without an event still render as fallback).
+ * - `assistant` messages are skipped when an `answer` event carries the same
+ *   text (final answers). An assistant dict carrying `tool_calls` (turn
+ *   preamble) renders only when its `content` is non-empty — otherwise it is
+ *   just the empty shell around the `tool_use` one-liner.
+ * - `user` messages always render (prompts live only in `messages`).
  */
 export function historyToMessages(history: HistoryItem[]): ChatMessage[] {
+	const answerTexts = new Set<string>()
+	const resultCallIds = new Set<string>()
+	for (const item of history) {
+		if (item.kind !== 'event') continue
+		const p = (item.payload ?? {}) as Record<string, unknown>
+		if (item.type === 'answer' && typeof p.text === 'string' && p.text) {
+			answerTexts.add(p.text)
+		} else if (item.type === 'tool_result' && typeof p.tool_call_id === 'string') {
+			resultCallIds.add(p.tool_call_id)
+		}
+	}
 	const out: ChatMessage[] = []
 	history.forEach((item, i) => {
 		if (item.kind === 'message') {
-			let role: ChatMessage['role'] = 'system'
-			if (item.role === 'user') role = 'user'
-			else if (item.role === 'assistant') role = 'assistant'
-			else if (item.role === 'tool') role = 'tool'
+			if (item.role === 'user') {
+				const text = contentText(item.content)
+				if (text) out.push({ id: `h-${i}`, role: 'user', text })
+				return
+			}
+			if (item.role === 'tool') {
+				const c =
+					item.content && typeof item.content === 'object'
+						? (item.content as Record<string, unknown>)
+						: null
+				const callId = c && typeof c.tool_call_id === 'string' ? c.tool_call_id : null
+				// Covered by the paired `tool_result` one-liner — skip.
+				if (callId && resultCallIds.has(callId)) return
+				const text = contentText(item.content)
+				if (text) out.push({ id: `h-${i}`, role: 'tool', text })
+				return
+			}
+			if (item.role === 'assistant') {
+				const c =
+					item.content && typeof item.content === 'object'
+						? (item.content as Record<string, unknown>)
+						: null
+				const hasToolCalls = c && Array.isArray(c.tool_calls) && c.tool_calls.length > 0
+				const text = contentText(item.content)
+				if (hasToolCalls) {
+					// Turn preamble around the `tool_use` one-liner — keep only
+					// when the model actually wrote something alongside the call.
+					if (text.trim()) out.push({ id: `h-${i}`, role: 'assistant', text })
+					return
+				}
+				// Final answer — covered by the `answer` event.
+				if (text && answerTexts.has(text)) return
+				if (text) out.push({ id: `h-${i}`, role: 'assistant', text })
+				return
+			}
 			const text = contentText(item.content)
-			if (text) out.push({ id: `h-${i}`, role, text })
+			if (text) out.push({ id: `h-${i}`, role: 'system', text })
 		} else {
 			const msg = eventMessage(item.type, item.payload, `h-${i}`, item.seq)
 			if (msg) out.push(msg)
 		}
 	})
 	return pairToolCalls(out)
+}
+
+/**
+ * Stable JSON for dedup signatures (recursive key sort — history and SSE
+ * replay serialize the same dict, but key order is not guaranteed).
+ */
+function stableJson(value: unknown): string {
+	if (value === null || value === undefined) return ''
+	if (typeof value !== 'object') return JSON.stringify(value) ?? ''
+	if (Array.isArray(value)) return `[${value.map((v) => stableJson(v)).join(',')}]`
+	const entries = Object.entries(value as Record<string, unknown>)
+		.filter(([, v]) => v !== undefined)
+		.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+	return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableJson(v)}`).join(',')}}`
+}
+
+/** Identity of one durable event for history-vs-live replay dedup. */
+function eventSig(type: string, seq: number, payload: unknown): string {
+	return `${type}|${seq}|${stableJson(payload)}`
+}
+
+/**
+ * Drop live events already covered by history (multiset subtraction).
+ *
+ * The SSE replay starts at `after_seq=0`, so every durable event the SSR
+ * `load` already fetched comes back a second time via the stream — the
+ * same `tool_use`/`tool_result` pair and the same final `answer` render
+ * twice. History items carry generation-local `seq`, and so do live events
+ * of the same generation, so `(type, seq, payload)` identifies a replay.
+ * Counts (not a set) preserve legitimate repeats: two identical answers
+ * from two prompts still render twice.
+ */
+function dedupLiveEvents(history: HistoryItem[], events: LiveEvent[]): LiveEvent[] {
+	const covered = new Map<string, number>()
+	for (const item of history) {
+		if (item.kind !== 'event') continue
+		const key = eventSig(item.type, item.seq, item.payload)
+		covered.set(key, (covered.get(key) ?? 0) + 1)
+	}
+	return events.filter((evt) => {
+		if (isDeltaEvent(evt) || typeof evt.seq !== 'number') return true
+		const key = eventSig(evt.type, evt.seq, (evt as DurableEvent).payload)
+		const n = covered.get(key) ?? 0
+		if (n <= 0) return true
+		covered.set(key, n - 1)
+		return false
+	})
 }
 
 /**
@@ -396,8 +498,12 @@ export function buildTranscript(
 	events: LiveEvent[],
 	streaming?: StreamingDraft
 ): ChatMessage[] {
-	const settled = pairToolCalls([...historyToMessages(history), ...eventsToMessages(events)])
-	const out = [...settled]
+	// NOTE: historyToMessages/eventsToMessages already pair internally; do NOT
+	// pair again here — a second pass would merge across the history/events
+	// boundary and drop ids (double-pairing bug). Live events already covered
+	// by history (SSE replay from after_seq=0) are dropped first, so the same
+	// tool pair / answer never renders twice.
+	const out = [...historyToMessages(history), ...eventsToMessages(dedupLiveEvents(history, events))]
 	if (streaming?.showThought && streaming.thought) {
 		out.push({
 			id: 'streaming-thought',

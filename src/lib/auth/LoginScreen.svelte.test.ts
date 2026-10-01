@@ -21,4 +21,17 @@ describe('LoginScreen', () => {
 		await screen.getByRole('button', { name: /forgot your password/i }).click()
 		await expect.element(screen.getByRole('heading', { name: 'Reset your password' })).toBeVisible()
 	})
+	it('renders translated strings via the labels prop', async () => {
+		const screen = await render(LoginScreenTestHost, {
+			labels: {
+				welcomeBack: 'Bon retour',
+				signIn: 'Se connecter',
+				loginWith: (l: string) => `Se connecter avec ${l}`,
+			},
+		})
+		await expect.element(screen.getByRole('heading', { name: 'Bon retour' })).toBeVisible()
+		await expect
+			.element(screen.getByRole('button', { name: 'Se connecter avec Google' }))
+			.toBeVisible()
+	})
 })

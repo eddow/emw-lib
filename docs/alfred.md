@@ -151,10 +151,48 @@ default), one submit per call, rendered by the built-in `AskHumanCard`.
   `AlfredSession` (BE-side), the FE owns the stream.
 - A later parent change means "a different generation" — remount, don't
   silently switch (props are construction-time config; only `showThought` /
-  `placeholder` / `onerror` stay live).
+  `placeholder` / `onerror` / `onstop` / `onretry` stay live).
 - `ButlerSession` / `ButlerStatus` / `SendMode` survive as deprecated aliases
   of `GenerationStream` / `GenerationStatus` (`queue | steer | interrupt` —
   `redirect` is gone).
+
+## Chat output shape (plan `plans/ChatOutput.md` §1, built 2026-09-30)
+
+Live-expanded → settled-collapsed: a live event (unpaired `tool_use`,
+streaming draft, pending human) renders as an expanded block (`max-height`
+~12 lines); once settled it collapses to a one-line div with an icon,
+expandable via `<details>`.
+
+- `transcript.ts` pairs `tool_use`→`tool_result` by `tool_call_id` into one
+  `kind: 'tool_call'` message (unpaired = pending/live). `done/stop` renders
+  nothing; `done/superseded|archived` → `kind: 'status'` one-liner (labels via
+  the `statusLabels` prop — paraglide lives in the app, never here);
+  `done/max_iterations` + `error` → `kind: 'retry'` box with Keep/Try-again
+  (`onretry`) and a 🐌 countdown when the payload carries an explicit
+  "wait N seconds" hint (`parseRetryAfterS` — no blind auto-retry).
+  `thought` gains `kind: 'thought'` (still hidden unless `showThought`).
+  Two dedup layers (both in `transcript.ts`, both tested):
+  - `historyToMessages` skips `messages`-table rows already covered by the
+    `events` table (the runner writes every assistant/tool write to BOTH:
+    `tool` message ≈ `tool_result` output, final assistant message ≈
+    `answer` text, empty assistant `tool_calls` shell ≈ `tool_use` one-liner).
+  - `buildTranscript` drops live SSE events already covered by history (the
+    stream replays from `after_seq=0`, so the SSR `load`'s events come back
+    a second time) via `(type, seq, payload)` multiset subtraction.
+- `Chat.svelte` renders the kinds (`ToolCallRow`, `ThoughtRow`, `StatusLine`,
+  `RetryBox`), assistant `answer` as markdown (`markdown.ts` —
+  dependency-free escaped subset; full `markdown-it` + KaTeX + `mermaid` land
+  when the need arises), stick-to-bottom auto-scroll (never yanks history
+  readers), and an adaptive combo-button: the Send button uses the effective
+  mode for the current chat status (`prompt` when idle, `queue`/`steer`/
+  `interrupt` when live — `queue`/`steer`/`interrupt` are `409` when idle on
+  the BE, `prompt` is `409` when running), the ▾ dropdown only offers the
+  modes valid right now (hidden when a single mode applies), with
+  vscode-style keys (`Enter` = effective mode, `Ctrl+Enter` = steer,
+  `Alt+Enter` = interrupt clamped to `prompt` when idle, `Esc` = stop via
+  `onstop`). `onsend(prompt, mode)` carries the mode — the APP maps it to its
+  stream route. No optimistic user bubble: transcript stays a pure function
+  of history + events + draft.
 
 ## Files
 
@@ -163,9 +201,10 @@ default), one submit per call, rendered by the built-in `AskHumanCard`.
 | `types.ts` — wire contract (snake_case keys), `StreamCredential`, `PromptInput/Result`, `PlayResult` | — |
 | `client.ts` — `AlfredClient` + `AlfredError`, BE/stream split, SSE parser, `pollLoop` | `client.test.ts` |
 | `stream.ts` — `applyLiveEvent` reducer, `lastSeq` cursor (generation-local) | `stream.test.ts` |
-| `transcript.ts` — history/events → `ChatMessage[]` | `transcript.test.ts` |
+| `transcript.ts` — history/events → `ChatMessage[]` (tool pairing, status/retry) | `transcript.test.ts` |
+| `markdown.ts` — dependency-free escaped markdown subset for `answer` | `markdown.test.ts` |
 | `session.svelte.ts` — `GenerationStream` lifecycle shell (+ `ButlerSession` alias) | `session.svelte.test.ts` |
-| `Chat.svelte` — `AlfredChat` stream-only chat | `Chat.svelte.test.ts` (+ `ChatTestHost.svelte`, test-only) |
+| `Chat.svelte` — `AlfredChat` stream-only chat (+ `ToolCallRow`, `ThoughtRow`, `StatusLine`, `RetryBox`) | `Chat.svelte.test.ts` (+ `ChatTestHost.svelte`, test-only) |
 | `tools.ts` — `AgentTool`, `ToolScope` (+`generationId`), `toToolset`, `toMixedToolset`, `createToolHandler`, `toHumanToolset`, `askHumanTool` | `tools.test.ts` |
 | `server.ts` — `checkWebhookSecret`, `createWebhookHandler` | `server.test.ts` |
 

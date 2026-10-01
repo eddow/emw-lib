@@ -19,8 +19,8 @@
 /** Injectable fetch (`typeof fetch`), same convention as `alfred` and `openrouter`. */
 export type FetchFn = typeof fetch
 
-/** Jev primitive type. `noul` = P(true) 0..1, `choice` = pick one candidate. */
-export type JevQuestionType = 'noul' | 'choice'
+/** Jev primitive type. `noul` = P(true) 0..1, `choice` = pick one candidate, `score` = ordinal level (Laya backends; Jev rejects it). */
+export type JevQuestionType = 'noul' | 'choice' | 'score'
 
 /** One question in the Decisions `questions` map. */
 export interface JevQuestion {
