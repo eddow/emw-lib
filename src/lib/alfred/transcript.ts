@@ -131,7 +131,11 @@ function payloadText(payload: unknown): string {
 
 /** First line of `s`, trimmed and truncated to `max` chars (for one-liners). */
 function oneLine(s: string, max = 80): string {
-	const line = s.split('\n').map((l) => l.trim()).find((l) => l !== '') ?? ''
+	const line =
+		s
+			.split('\n')
+			.map((l) => l.trim())
+			.find((l) => l !== '') ?? ''
 	if (line.length <= max) return line
 	return `${line.slice(0, max - 1).trimEnd()}…`
 }
@@ -383,7 +387,11 @@ export function historyToMessages(history: HistoryItem[]): ChatMessage[] {
 			if (msg) out.push(msg)
 		}
 	})
-	return pairToolCalls(out)
+	// NOTE: no pairing here — `buildTranscript` pairs over the concatenated
+	// history+live list so a `tool_use` from history pairs with a live
+	// `tool_result` (cross-boundary pairing). Pairing here as well would
+	// mutate the shared message objects twice (double-pairing bug).
+	return out
 }
 
 /**
@@ -437,9 +445,10 @@ function dedupLiveEvents(history: HistoryItem[], events: LiveEvent[]): LiveEvent
  * Merge `tool_use` (pending, args only) with its later `tool_result` (output
  * only) by `tool_call_id` into one settled `tool_call` message. Keeps the
  * `tool_use` id; drops the standalone result. Idempotent — already-merged
- * messages (both texts, `pending: false`) pass through untouched.
+ * messages (both texts, `pending: false`) pass through untouched. Exported
+ * for `buildTranscript`, which pairs across the history/live boundary.
  */
-function pairToolCalls(messages: ChatMessage[]): ChatMessage[] {
+export function pairToolCalls(messages: ChatMessage[]): ChatMessage[] {
 	const pendingByCall = new Map<string, ChatMessage>()
 	const out: ChatMessage[] = []
 	for (const msg of messages) {
@@ -453,10 +462,7 @@ function pairToolCalls(messages: ChatMessage[]): ChatMessage[] {
 					use.tool.outputText = msg.tool.outputText
 					use.tool.pending = false
 					use.pending = false
-					use.text = toolSummary(
-						use.tool.toolName,
-						msg.tool.outputText ?? use.tool.argsText ?? ''
-					)
+					use.text = toolSummary(use.tool.toolName, msg.tool.outputText ?? use.tool.argsText ?? '')
 					pendingByCall.delete(msg.tool.toolCallId)
 					// Standalone result consumed — not pushed.
 				} else {
@@ -477,6 +483,8 @@ function pairToolCalls(messages: ChatMessage[]): ChatMessage[] {
  * ephemeral by design and surface through the `streaming` draft instead.
  * Ids use the array index: the same durable event can appear twice (once via
  * `loadHistory`, once via the SSE replay), and `seq` alone would collide.
+ * NOTE: no pairing here — `buildTranscript` pairs over the concatenated
+ * history+live list (cross-boundary pairing, see `historyToMessages`).
  */
 export function eventsToMessages(events: LiveEvent[]): ChatMessage[] {
 	const out: ChatMessage[] = []
@@ -486,24 +494,27 @@ export function eventsToMessages(events: LiveEvent[]): ChatMessage[] {
 		const msg = eventMessage(evt.type, (evt as DurableEvent).payload, `e-${i}`, evt.seq)
 		if (msg) out.push(msg)
 	})
-	return pairToolCalls(out)
+	return out
 }
 
 /**
  * Full transcript: history, then live events, then the optional streaming
  * draft as pending bubble(s). Never mutates its inputs.
+ *
+ * Draft lifetime: the live draft renders ONLY while no durable final for it
+ * has arrived yet. `applyLiveEvent` consumes the draft on durable
+ * `answer`/`thought` (resets to `''`), so a settled final never coexists
+ * with its own pending bubble. Pairing runs over the CONCATENATED message
+ * list, so a `tool_use` from history pairs with a `tool_result` arriving
+ * live (and vice versa).
  */
 export function buildTranscript(
 	history: HistoryItem[],
 	events: LiveEvent[],
 	streaming?: StreamingDraft
 ): ChatMessage[] {
-	// NOTE: historyToMessages/eventsToMessages already pair internally; do NOT
-	// pair again here — a second pass would merge across the history/events
-	// boundary and drop ids (double-pairing bug). Live events already covered
-	// by history (SSE replay from after_seq=0) are dropped first, so the same
-	// tool pair / answer never renders twice.
-	const out = [...historyToMessages(history), ...eventsToMessages(dedupLiveEvents(history, events))]
+	const live = dedupLiveEvents(history, events)
+	const out = pairToolCalls([...historyToMessages(history), ...eventsToMessages(live)])
 	if (streaming?.showThought && streaming.thought) {
 		out.push({
 			id: 'streaming-thought',

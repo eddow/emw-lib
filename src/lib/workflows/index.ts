@@ -10,6 +10,7 @@ export { checkWorkflow } from './check.js'
 export type {
 	AsyncWorkflowDef,
 	AsyncWorkflowMeta,
+	WorkflowInputField,
 } from './define.js'
 export {
 	clearAsyncWorkflows,
@@ -17,6 +18,11 @@ export {
 	getAsyncWorkflow,
 	listAsyncWorkflows,
 } from './define.js'
+export type {
+	WorkflowInteractionLite,
+	WorkflowOutputEntry,
+} from './display.js'
+export { groupParallelOpens, normalizeWorkflowOutput } from './display.js'
 export { fnSourceHash, payloadHash, stableStringify } from './memo.js'
 export { extractBalanced, extractJsonValue, parseJson } from './parseJson.js'
 export type {
@@ -42,3 +48,7 @@ export {
 	ParseError,
 	throwControlFlow,
 } from './types.js'
+export { default as WorkflowInputForm } from './WorkflowInputForm.svelte'
+export { default as WorkflowOutput } from './WorkflowOutput.svelte'
+export { default as WorkflowPane } from './WorkflowPane.svelte'
+export { default as WorkflowStream } from './WorkflowStream.svelte'

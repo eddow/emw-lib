@@ -105,6 +105,17 @@ describe('createSession', () => {
 		expect(body.metadata).toEqual({ source: 'emw' })
 	})
 
+	it('forwards credentials when provided', async () => {
+		const { fn, calls } = mockFetch(() => jsonResponse({ session_id: 'x' }, 201))
+		const client = new AlfredClient({ fetchFn: fn })
+		await client.createSession({
+			agent: { model: 'm' },
+			credentials: { openrouter_api_key: 'sk-or-v1-test' },
+		})
+		const body = JSON.parse(String(calls[0].init?.body))
+		expect(body.credentials).toEqual({ openrouter_api_key: 'sk-or-v1-test' })
+	})
+
 	it('omits undefined optional keys instead of sending nulls', async () => {
 		const { fn, calls } = mockFetch(() => jsonResponse({ session_id: 'x' }, 201))
 		const client = new AlfredClient({ fetchFn: fn })

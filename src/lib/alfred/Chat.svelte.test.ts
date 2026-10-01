@@ -33,7 +33,7 @@ function installFetch(answerText = 'Hello from Alfred') {
 	globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 		const url = String(input)
 		calls.push({ url, init })
-		if (url.includes('/streams/gen_1')) {
+		if (url.includes('/streams/')) {
 			const body = new ReadableStream({
 				start(controller) {
 					for (const f of frames(answerText)) controller.enqueue(encoder.encode(f))
@@ -93,6 +93,12 @@ describe('Chat', () => {
 				// a new generation via `prompt`, not `queue`.
 				expect(onsend).toHaveBeenCalledWith('Hi Alfred', 'prompt')
 			})
+			// The returned credential is attached live (no remount): the new
+			// generation's answer streams on the same mount (B1).
+			await expect
+				.element(messages.getByTestId('alfred-chat-message').last())
+				.toHaveTextContent('Hello from Alfred')
+			expect(net.calls.some((c) => c.url.includes('/streams/gen_2'))).toBe(true)
 		} finally {
 			net.restore()
 		}

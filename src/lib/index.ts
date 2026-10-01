@@ -3,6 +3,10 @@ export * from './alfred/index.js'
 export * from './auth/index.js'
 export type { AuthClient } from './auth/LoginScreen.svelte'
 export { default as LoginScreen } from './auth/LoginScreen.svelte'
+export { default as WorkflowInputForm } from './workflows/WorkflowInputForm.svelte'
+export { default as WorkflowOutput } from './workflows/WorkflowOutput.svelte'
+export { default as WorkflowPane } from './workflows/WorkflowPane.svelte'
+export { default as WorkflowStream } from './workflows/WorkflowStream.svelte'
 export * from './jev/index.js'
 export * from './menu/index.js'
 export * from './openrouter/client.js'
@@ -31,6 +35,9 @@ export type {
 	ToolRegistryEntry,
 	WFContext,
 	WFCreateSessionInput,
+	WorkflowInputField,
+	WorkflowInteractionLite,
+	WorkflowOutputEntry,
 	WorkflowStreamEvent,
 } from './workflows/index.js'
 export {
@@ -41,9 +48,11 @@ export {
 	extractJsonValue,
 	fnSourceHash,
 	getAsyncWorkflow,
+	groupParallelOpens,
 	InteractionFailed,
 	isControlFlow,
 	listAsyncWorkflows,
+	normalizeWorkflowOutput,
 	ParseError,
 	parseJson,
 	payloadHash,

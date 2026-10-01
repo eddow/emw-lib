@@ -43,20 +43,20 @@ describe('applyLiveEvent', () => {
 		expect(state.text).toBe('ok')
 	})
 
-	it('replaces the draft with the durable final answer', () => {
+	it('consumes the draft on the durable final answer (final renders via events)', () => {
 		let state = createStreamState()
 		state = applyLiveEvent(state, delta('answer_delta', 'Hel'))
 		state = applyLiveEvent(state, delta('answer_delta', 'lo'))
 		state = applyLiveEvent(state, durable('answer', 3, { text: 'Hello world' }))
-		expect(state.text).toBe('Hello world')
+		expect(state.text).toBe('')
 		expect(state.lastSeq).toBe(3)
 	})
 
-	it('replaces the thought draft with the durable final thought', () => {
+	it('consumes the thought draft on the durable final thought', () => {
 		let state = createStreamState()
 		state = applyLiveEvent(state, delta('thought_delta', 'partial'))
 		state = applyLiveEvent(state, durable('thought', 2, { text: 'full reasoning' }))
-		expect(state.thought).toBe('full reasoning')
+		expect(state.thought).toBe('')
 	})
 
 	it('flips status on done and error', () => {
@@ -101,18 +101,18 @@ describe('applyLiveEvent', () => {
 		expect(state.status).toBe('streaming')
 	})
 
-	it('recovers the final draft after a reconnect replays a stale delta', () => {
+	it('drops a stale delta replayed after the durable final (draft already consumed)', () => {
 		// Deltas never advance lastSeq, so the client reconnects from the durable
-		// cursor and the replayed durable `answer` replaces any stale delta text.
+		// cursor; the durable final already consumed the draft, and a replayed
+		// stale delta must not resurrect text — the final renders via events.
 		let state = createStreamState()
 		state = applyLiveEvent(state, durable('answer', 3, { text: 'final' }))
-		const replayed: LiveEvent[] = [
-			delta('answer_delta', 'stale'),
-			durable('answer', 3, { text: 'final' }),
-		]
+		expect(state.text).toBe('')
+		const replayed: LiveEvent[] = [durable('answer', 3, { text: 'final' })]
 		for (const evt of replayed) state = applyLiveEvent(state, evt)
 		expect(state.lastSeq).toBe(3)
-		expect(state.text).toBe('final')
+		// The replayed durable re-consumes; the final text lives in `events`, not the draft.
+		expect(state.text).toBe('')
 	})
 
 	it('isDeltaEvent requires a stream_id, not just a _delta suffix', () => {

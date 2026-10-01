@@ -118,10 +118,12 @@
 		/**
 		 * Called when the user clicks Keep/Try-again on a retry box (or when
 		 * a rate-limit countdown elapses). Receives the retry message id; the
-		 * host resumes / re-prompts via its stream route. Defaults to a
-		 * no-op (box just dismisses).
+		 * host resumes / re-prompts via its stream route. May return a fresh
+		 * stream credential to attach (new generation, same contract as
+		 * `onsend`), or null/void to stay on the current stream. Defaults to
+		 * a no-op (box just dismisses).
 		 */
-		onretry?: ((msgId: string) => Promise<void> | void) | null
+		onretry?: ((msgId: string) => Promise<StreamCredential | null | void> | void) | null
 		/** Main Send button mode (the dropdown overrides per-send). */
 		defaultMode?: ChatSendMode
 		/** Per-tool icons for `tool_call` rows (default 🔧). */
@@ -198,6 +200,14 @@
 	const stream = new GenerationStream({ client })
 	$effect(() => () => stream.dispose())
 
+	// Live credential: `onsend` may return a new credential for the CURRENT
+	// mount (idle → prompt creates a generation without a remount). The
+	// client must follow it — otherwise the next `attach()` targets the
+	// stale construction-time URL/token and the answer never streams (B1).
+	$effect(() => {
+		if (liveCredential) client.setStreamCredential(liveCredential)
+	})
+
 	// Props are construction-time config — capture once; a remount picks up
 	// new values. (`showThought` stays live: it only toggles rendering.
 	// `onretry`/`onstop` stay live too: the host may pass spies after mount
@@ -207,6 +217,10 @@
 
 	let draft = $state('')
 	let sending = $state(false)
+	/** Credential for the current mount: construction-time prop, updated when
+	 * `onsend` returns a fresh one (idle → prompt without a remount). */
+	// svelte-ignore state_referenced_locally: construction-time seed; later updates flow via `liveCredential`.
+	let liveCredential = $state<StreamCredential | null>(credential)
 	// svelte-ignore state_referenced_locally: construction-time default; the dropdown owns later changes.
 	let sendMode = $state<ChatSendMode>(defaultMode)
 	let modeMenuOpen = $state(false)
@@ -249,6 +263,10 @@
 		})
 	)
 	const busy = $derived(sending || stream.isStreaming)
+	// The composer stays usable while streaming (queue/steer/interrupt need
+	// it); only the in-flight `onsend` round-trip disables Send. `sending`
+	// is true only between click and `onsend` resolving — hosts must resolve
+	// promptly (fire-and-forget side effects) so live sends never wedge it.
 	const canSend = $derived(draft.trim().length > 0 && !sending)
 	const showStop = $derived(stream.isStreaming || sending)
 
@@ -287,11 +305,11 @@
 
 	async function start(): Promise<void> {
 		if (!initial.credential) return // idle: history only, no stream to attach
-		try {
-			await stream.attach(initial.credential)
-		} catch (err) {
+		// Fire-and-forget: the SSE loop lives until `done`/dispose; awaiting
+		// it here would stall `send()`'s `sending` flag the same way.
+		stream.attach(initial.credential).catch((err: unknown) => {
 			fail(err instanceof Error ? err.message : String(err))
-		}
+		})
 	}
 	void start()
 
@@ -315,7 +333,19 @@
 			const next = await (
 				onsend as (p: string, m?: ChatSendMode) => Promise<StreamCredential | null>
 			)(prompt, mode)
-			if (next) await stream.attach(next)
+			if (next) {
+				// New generation: reset the stream so the previous generation's
+				// terminal state (`done`/`error`) and event log don't leak
+				// into the new turn, then attach the fresh credential.
+				// Attach WITHOUT awaiting: the SSE loop lives until `done`
+				// (or dispose); awaiting it would hold `sending=true` and
+				// wedge the composer for the whole generation.
+				liveCredential = next
+				stream.reset()
+				void stream.attach(next).catch((err: unknown) => {
+					fail(err instanceof Error ? err.message : String(err))
+				})
+			}
 		} catch (err) {
 			fail(err instanceof Error ? err.message : String(err))
 		} finally {
@@ -331,6 +361,29 @@
 		} finally {
 			stream.dispose()
 			sending = false
+		}
+	}
+
+	/**
+	 * Retry continuation: `RetryBox` dismisses itself, then this attaches a
+	 * fresh credential when the host returns one (new generation, same
+	 * contract as `send()` — reset + fire-and-forget attach). A null/void
+	 * return stays on the current stream (resume-in-place).
+	 */
+	async function continueAfterRetry(msgId: string): Promise<void> {
+		let next: StreamCredential | null | void = null
+		try {
+			next = await onretry?.(msgId)
+		} catch (err) {
+			fail(err instanceof Error ? err.message : String(err))
+			return
+		}
+		if (next) {
+			liveCredential = next
+			stream.reset()
+			void stream.attach(next).catch((err: unknown) => {
+				fail(err instanceof Error ? err.message : String(err))
+			})
 		}
 	}
 
@@ -427,7 +480,7 @@
 					kind: 'retry'
 					retry: NonNullable<ChatMessage['retry']>
 				}}
-				<RetryBox msg={retryMsg} {onretry} labels={retryLabels} />
+				<RetryBox msg={retryMsg} onretry={continueAfterRetry} labels={retryLabels} />
 			{:else if msg.kind === 'thought'}
 				{#if showThought}
 					{@const thoughtMsg = msg as ChatMessage & { kind: 'thought' }}
@@ -595,6 +648,8 @@
 		--alfred-ring: var(--ring, oklch(0.708 0 0));
 		--alfred-primary: var(--primary, oklch(0.205 0 0));
 		--alfred-primary-fg: var(--primary-foreground, oklch(0.985 0 0));
+		--alfred-user-bg: var(--secondary, oklch(0.97 0 0));
+		--alfred-user-fg: var(--secondary-foreground, oklch(0.205 0 0));
 		--alfred-destructive: var(--destructive, oklch(0.577 0.245 27.325));
 		--alfred-radius: var(--radius, 0.625rem);
 		display: flex;
@@ -608,8 +663,21 @@
 		max-height: 24rem;
 		overflow-y: auto;
 	}
+	.alfred-chat-message {
+		max-width: 100%;
+		word-break: break-word;
+	}
 	.alfred-chat-message-user {
 		align-self: flex-end;
+		max-width: 85%;
+		padding: 0.5rem 0.75rem;
+		border-radius: calc(var(--alfred-radius) - 2px);
+		border-bottom-right-radius: 2px;
+		background: var(--alfred-user-bg);
+		color: var(--alfred-user-fg);
+		font-size: 0.875rem;
+		line-height: 1.5;
+		white-space: pre-wrap;
 	}
 	.alfred-chat-message-assistant {
 		align-self: flex-start;

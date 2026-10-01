@@ -319,7 +319,11 @@ function budgetExceeded(which: 'maxOpens' | 'maxBytes' | 'maxWallMs', idx?: numb
  * bare host or a full URL — raw string comparison false-positives.
  */
 export function normalizeDeploymentUrl(url: string): string {
-	return url.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/\/$/, '').toLowerCase()
+	return url
+		.trim()
+		.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
+		.replace(/\/$/, '')
+		.toLowerCase()
 }
 
 export function journalBytes(value: unknown): number {
@@ -1349,7 +1353,11 @@ export async function tick(runId: string, deps: TickDeps): Promise<TickResult> {
 	// `VERCEL_PROJECT_PRODUCTION_URL` (bare host or full URL) must not
 	// false-positive on scheme/`https://` prefixes.
 	const prodUrl = deps.prodDeploymentUrl
-	if (prodUrl && run.deployment_url && normalizeDeploymentUrl(prodUrl) !== normalizeDeploymentUrl(run.deployment_url)) {
+	if (
+		prodUrl &&
+		run.deployment_url &&
+		normalizeDeploymentUrl(prodUrl) !== normalizeDeploymentUrl(run.deployment_url)
+	) {
 		const staleEvent: WorkflowStreamEvent = {
 			type: 'version_stale',
 			deployment_url: run.deployment_url,

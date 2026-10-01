@@ -91,18 +91,21 @@ describe('attach / reduce', () => {
 
 		expect(s.id).toBe('gen_1')
 		expect(s.status).toBe('done')
-		expect(s.text).toBe('hi')
+		// The durable final renders via `events`, not the draft (draft consumed).
+		expect(s.text).toBe('')
+		expect(s.events.map((e) => e.type)).toEqual(['answer', 'done'])
 		expect(calls[0].url).toBe('http://localhost:8192/streams/gen_1?after_seq=0')
 		expect(new Headers(calls[0].init?.headers).get('authorization')).toBe('Bearer tok-1')
 	})
 
-	it('appends deltas, replaces with the durable answer', async () => {
+	it('appends deltas, consumes the draft on the durable answer', async () => {
 		const { fn } = mockFetch([DELTA('Hel', 1), DELTA('lo', 2), ANSWER('Hello world', 3), DONE(4)])
 		const s = stream(fn)
 		await s.attach(CRED)
 		await s.attached
 
-		expect(s.text).toBe('Hello world')
+		// Draft consumed by the durable final; the final text lives in `events`.
+		expect(s.text).toBe('')
 		expect(s.lastSeq).toBe(4)
 		expect(s.status).toBe('done')
 		expect(s.events).toHaveLength(4)
@@ -180,8 +183,8 @@ describe('event log bound', () => {
 		// 5 events arrived, cap is 3 → the 2 oldest deltas were dropped.
 		expect(s.events).toHaveLength(3)
 		expect(s.events.map((e) => e.type)).toEqual(['answer_delta', 'answer', 'done'])
-		// The durable record is intact and the draft is unaffected.
-		expect(s.text).toBe('abc')
+		// The durable record is intact; the draft was consumed by the final.
+		expect(s.text).toBe('')
 		expect(s.lastSeq).toBe(5)
 	})
 
@@ -192,7 +195,8 @@ describe('event log bound', () => {
 		await s.attached
 
 		expect(s.events).toEqual([])
-		expect(s.text).toBe('a')
+		// Draft consumed by the durable final even when the log is disabled.
+		expect(s.text).toBe('')
 		expect(s.lastSeq).toBe(3)
 	})
 })

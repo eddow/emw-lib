@@ -7,8 +7,10 @@
  *
  * Rules (mirroring `butler/alfred.md` §4):
  * - `answer_delta` / `thought_delta` append to the current draft.
- * - durable `answer` / `thought` REPLACE the draft with `payload.text` (the
- *   final wins over accumulated deltas).
+ * - durable `answer` / `thought` CONSUME the draft: the final is rendered
+ *   from the durable event list, so the draft resets to `''` (no duplicate
+ *   pending bubble, no cross-turn accumulation — the next turn's deltas
+ *   start fresh).
  * - `done` / `error` flip `status`.
  * - only durable events advance `lastSeq`; deltas never do (the reconnect
  *   cursor comes from durable `seq` alone — deltas are dropped on restart).
@@ -50,12 +52,6 @@ export function isDeltaEvent(evt: LiveEvent): evt is DeltaEvent {
 	)
 }
 
-/** Read `payload.text` from a durable event, tolerating a missing payload. */
-function payloadText(evt: DurableEvent): string {
-	const text = evt.payload?.text
-	return typeof text === 'string' ? text : ''
-}
-
 /**
  * Apply one live event, returning a NEW state (never mutates the input).
  * Unknown event types are passed through unchanged.
@@ -81,9 +77,14 @@ export function applyLiveEvent(state: StreamState, evt: LiveEvent): StreamState 
 	const next: StreamState = { ...state, lastSeq: Math.max(state.lastSeq, durable.seq ?? 0) }
 	switch (durable.type) {
 		case 'answer':
-			return { ...next, text: payloadText(durable) }
+			// The durable final renders as a message via `eventsToMessages`;
+			// the draft is consumed (reset) so `buildTranscript` does not emit
+			// a duplicate pending bubble alongside it.
+			return { ...next, text: '' }
 		case 'thought':
-			return { ...next, thought: payloadText(durable) }
+			// Same as `answer`: the durable `thought` renders collapsed via
+			// the event list; the live draft resets so no expanded block lingers.
+			return { ...next, thought: '' }
 		case 'human_question': {
 			const p = (durable.payload ?? {}) as Partial<HumanQuestionPayload>
 			const toolCallId =

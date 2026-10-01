@@ -297,6 +297,7 @@ export class AlfredClient {
 			agent: input.agent,
 			toolset: input.toolset,
 			metadata: input.metadata,
+			credentials: input.credentials,
 		})
 		return this.beJson('POST', '/sessions', body, signal)
 	}
@@ -478,6 +479,7 @@ export class AlfredClient {
 				session_id: input.session_id,
 				execution: input.execution,
 				webhook_url: input.webhook_url,
+				credentials: input.credentials,
 			}),
 			signal
 		)

@@ -17,7 +17,7 @@
 			| ((prompt: string) => Promise<StreamCredential | null>)
 			| null
 		onstop?: (() => Promise<void> | void) | null
-		onretry?: ((msgId: string) => Promise<void> | void) | null
+		onretry?: ((msgId: string) => Promise<StreamCredential | null | void> | void) | null
 		// biome-ignore lint/suspicious/noExplicitAny: passthrough for label props in tests
 		[key: string]: any
 	} = $props()

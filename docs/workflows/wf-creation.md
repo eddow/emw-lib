@@ -100,6 +100,35 @@ returning one English sentence. It is display-only (never replay
 identity), computed once at open time and cached as `label_text`. The FE
 keys translations on `label`.
 
+## 7b. FE catalogue meta (optional, for the workflow picker + generic screens)
+
+Same `defineAsyncWorkflow(fn, meta)` call — four extra optional keys,
+advisory only (no engine behaviour change):
+
+```ts
+defineAsyncWorkflow(myWorkflow, {
+  name: 'triagePages',
+  version: 1,
+  describeStep,
+  outputSchema,
+  title: 'Page triage', // picker label (English default; app overrides via paraglide)
+  description: 'Keep or drop a list of pages.', // picker one-liner
+  inputSpec: [
+    { name: 'urls', type: 'urls', required: true }, // one URL per line → string[]
+    { name: 'mode', type: 'select', options: ['auto', 'needsReview'], defaultValue: 'auto' },
+  ],
+  outputLabels: { verdicts: 'Verdicts', summary: 'Summary' }, // W-O key → title
+})
+```
+
+- `inputSpec` drives `WorkflowInputForm` (one `<input name>` per field).
+  Absent = free JSON textarea fallback. The starter still validates the
+  submitted object through the workflow's own W-I `SchemaLike` when the
+  author provides one (convention: export `<name>InputSchema` next to the
+  workflow) — `inputSpec` never replaces validation.
+- `outputLabels` feeds `WorkflowOutput` (merged under app-level labels).
+  Scalar/array W-O wraps as `{ result }` automatically.
+
 ## 8. Checklist before submitting
 
 - [ ] W-I / W-O types exported; every path returns W-O.

@@ -3,6 +3,7 @@ import {
 	buildTranscript,
 	eventsToMessages,
 	historyToMessages,
+	pairToolCalls,
 	parseRetryAfterS,
 } from './transcript.js'
 import type { HistoryItem, LiveEvent } from './types.js'
@@ -36,9 +37,33 @@ describe('historyToMessages', () => {
 				ts: 't',
 			},
 		]
-		const out = historyToMessages(history)
+		const out = pairToolCalls(historyToMessages(history))
 		expect(out).toHaveLength(1)
 		expect(out[0]).toMatchObject({ kind: 'tool_call', pending: false })
+	})
+
+	it('pairs a history tool_use with a live tool_result (cross-boundary)', () => {
+		const history: HistoryItem[] = [
+			{
+				kind: 'event',
+				seq: 1,
+				type: 'tool_use',
+				payload: { tool_call_id: 'c1', name: 'search', arguments: { q: 'x' } },
+				ts: 't',
+			},
+		]
+		const events: LiveEvent[] = [
+			{
+				seq: 2,
+				type: 'tool_result',
+				payload: { tool_call_id: 'c1', name: 'search', output: 'found' },
+				ts: 't',
+			},
+		]
+		const out = buildTranscript(history, events)
+		expect(out).toHaveLength(1)
+		expect(out[0]).toMatchObject({ kind: 'tool_call', pending: false })
+		expect(out[0].tool?.outputText).toContain('found')
 	})
 
 	it('keeps orphan tool messages with no matching tool_result event', () => {
@@ -109,7 +134,7 @@ describe('historyToMessages', () => {
 			{ kind: 'message', seq: 4, role: 'assistant', content: 'done: found' },
 			{ kind: 'event', seq: 3, type: 'answer', payload: { text: 'done: found' }, ts: 't' },
 		]
-		const out = historyToMessages(history)
+		const out = pairToolCalls(historyToMessages(history))
 		expect(out.map((m) => m.text)).toEqual(['lookup x', 'search — found', 'done: found'])
 		expect(out.filter((m) => m.kind === 'tool_call')).toHaveLength(1)
 	})
@@ -161,7 +186,9 @@ describe('historyToMessages', () => {
 				ts: 't',
 			},
 		]
-		const out = historyToMessages(history)
+		// Pairing happens in `buildTranscript` (cross-boundary); `historyToMessages`
+		// leaves the pair unpacked so a live `tool_result` can still join it.
+		const out = buildTranscript(history, [])
 		expect(out).toHaveLength(1)
 		expect(out[0]).toMatchObject({ kind: 'tool_call', pending: false })
 		expect(out[0].tool).toMatchObject({

@@ -98,6 +98,45 @@ generation-stream shape (SSE + `poll`, `after_seq` replay).
 | `parseJson.ts` | Extraction ladder (clean → fences → balanced-extract → `safeParse`) |
 | `memo.ts` | `fnSourceHash` / `stableStringify` / `payloadHash` |
 | `check.ts` | `checkWorkflow(src)` — exhaustiveness (9.2) + determinism (9.3) lints |
+| `display.ts` | `normalizeWorkflowOutput` (record → entries, scalar/array → `{ result }`) / `groupParallelOpens` (consecutive idxs → one grid line) / `WorkflowInteractionLite` / `WorkflowOutputEntry` |
+| `WorkflowInputForm.svelte` | Generic W-I form: one `<input name>` per `WorkflowInputField` (`urls` = textarea → `string[]`); submits `{ [name]: value }` via `onsubmit`; `children` snippet replaces the fields |
+| `WorkflowStream.svelte` | Chat-like live view over `WorkflowStreamEvent[]`: one row per `interaction_opened` (`label_text` verbatim), consecutive idxs in one responsive grid line, `interaction_resolved` flips to settled, `log` dimmed, `version_stale` banner, `run_status` header |
+| `WorkflowOutput.svelte` | Generic W-O screen: default `<dl>` (strings via `renderMarkdown`, else JSON `<pre>`); `children` snippet replaces the `<dl>` |
+| `WorkflowPane.svelte` | Orchestrator: `starting` → `running` → `done`/`error`/`cancelled`; cancel button; pinned `askHuman` snippet slot; `followUp` slot when done |
+
+## FE components (plan `plans/workflow-ui.md` §2; done 2026-10-01)
+
+- **Catalogue meta** (`define.ts`, client-safe): `WorkflowInputField`
+  (`text | textarea | number | boolean | select | urls`, `required`, `options`,
+  `placeholder`, `defaultValue`) + `AsyncWorkflowMeta/Def` gain optional `title?`,
+  `description?`, `inputSpec?`, `outputLabels?`. Advisory only — the starter still
+  validates through the workflow's own W-I `SchemaLike`; duplicate `name@version`
+  still throws.
+- **Transport-agnostic pane**: `WorkflowPane` takes `phase` / `events` / `output` /
+  callbacks (`onstart`, `oncancel`) — the host owns fetching (start POST, stream
+  poll/SSE, cancel/answer POST). There are no `runId` / `streamUrl` / `ondone` props:
+  the host swaps in follow-up UI through the `followUp` snippet when `phase === 'done'`.
+- **Reactive stream**: `WorkflowStream` derives rows/groups/logs/stale/status
+  from `events`/`interactions` via `$derived` — the host updates props in place
+  (poll/SSE append) with no remount and no `key` needed. (Pre-2026-10-01 it
+  snapshotted construction-time `initial`, like `AlfredChat`.)
+- **Form `novalidate`**: the `<form>` carries `novalidate` so native `required`
+  bubbles never pre-empt the custom required-error path (`workflow-input-error`).
+- **Form edge cases**: `number` `NaN` coerces to `''` (caught by `required`,
+  never sent as JSON `null`); `select` without `defaultValue` renders a disabled
+  `—` placeholder so no option is silently pre-selected.
+- **Pane terminal fallback**: `done`/`error`/`cancelled` with `null`/`undefined`
+  output renders `workflow-output-empty` (`Done — no output.` / `Error.` /
+  `Cancelled.`) instead of a blank pane.
+- **Client-safe rule extends to FE**: `display.ts` + all four components have no
+  `node:` imports, no env reads; labels arrive via props (English defaults, app
+  overrides with paraglide `m.*()`).
+- **Tests**: `display.test.ts` (server project) + `Workflow.svelte.test.ts`
+  (client project, via `WorkflowTestHost.svelte`). Every `render` uses
+  `{ props: {...} }` — the bare form misfires whenever a prop is named `events`
+  (a Svelte mount option): the testing library then treats the object as mount
+  options, drops the props, and either renders empty or throws
+  `UnknownSvelteOptionsError`. `expect.requireAssertions: true` holds.
 
 ## Rules for contributors
 
@@ -147,7 +186,7 @@ const pinnedBase = (deploymentUrl: string) => deploymentUrl.replace(/\/$/, '')
 const result = await tick(runId, {
   sql,
   lookupWorkflow: (name, version) => getAsyncWorkflow(name, version),
-  postSession: (i) => alfred.createSession({ agent: { model: i.model, system_prompt: i.systemPrompt }, toolset: i.toolset }).then((r) => r.session_id),
+  postSession: (i) => alfred.createSession({ agent: { model: i.model, system_prompt: i.systemPrompt }, toolset: i.toolset, credentials: env.OPENROUTER_API_KEY ? { openrouter_api_key: env.OPENROUTER_API_KEY } : undefined }).then((r) => r.session_id),
   runTool: async (tool, input) => {
     /* enqueue `execute` on the pinned deployment; resolution writes via resolveInteraction */
   },

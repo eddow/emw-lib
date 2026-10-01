@@ -124,4 +124,27 @@ describe('defineAsyncWorkflow', () => {
 		expect(bare.outputSchema).toBeUndefined()
 		clearAsyncWorkflows()
 	})
+
+	it('carries display meta for the FE catalogue (workflow-ui §1)', () => {
+		expect.assertions(5)
+		clearAsyncWorkflows()
+		const def = defineAsyncWorkflow(marketplaceAnalysis, {
+			name: 'marketplaceAnalysis',
+			version: 1,
+			describeStep: ({ label }) => `Step ${label}`,
+			title: 'Market analysis',
+			description: 'Research a product across marketplaces.',
+			inputSpec: [
+				{ name: 'productDescription', type: 'textarea', required: true },
+				{ name: 'marketplaces', type: 'urls', required: true },
+			],
+			outputLabels: { result: 'Findings' },
+		})
+		expect(def.title).toBe('Market analysis')
+		expect(def.description).toBe('Research a product across marketplaces.')
+		expect(def.inputSpec).toHaveLength(2)
+		expect(def.outputLabels).toEqual({ result: 'Findings' })
+		expect(getAsyncWorkflow('marketplaceAnalysis', 1)?.title).toBe('Market analysis')
+		clearAsyncWorkflows()
+	})
 })
