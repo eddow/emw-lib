@@ -20,9 +20,9 @@ export const POST: RequestHandler = async ({ url, request }) => {
 	if (!frame || typeof frame.kind !== 'string') {
 		return Response.json({ error: 'frame {kind,…} required' }, { status: 400 })
 	}
-	pushFrame(gid, frame)
+	const { attached, closed } = pushFrame(gid, frame)
 	const g = __mockState().generations.get(gid)
-	return Response.json({ ok: true, attached: !!g?.controller, queued: g?.queue.length ?? 0 })
+	return Response.json({ ok: !closed, attached, closed, queued: g?.queue.length ?? 0 })
 }
 
 void __mockState

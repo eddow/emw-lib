@@ -31,6 +31,11 @@ interface Generation {
 
 const generations = new Map<string, Generation>()
 let failNext: { status: number; detail: string } | null = null
+/** Per-generation failure: `POST /control-fail { gid, … }` fails only that
+ * generation's stream GET. Unlike the global `failNext` one-shot (which any
+ * parallel worker's attach can consume), a per-gid arm cannot leak across
+ * tests sharing the preview server process. */
+const failByGid = new Map<string, { status: number; detail: string }>()
 /** Monotonic id so every `prompt` gets a fresh stream even across page reloads. */
 let nextN = 0
 
@@ -120,16 +125,30 @@ export function __mockState() {
 		generations,
 		getFailNext: () => failNext,
 		setFailNext: (v: typeof failNext) => (failNext = v),
+		getFailGid: (gid: string) => failByGid.get(gid),
+		setFailGid: (gid: string, v: { status: number; detail: string } | null) => {
+			if (v) failByGid.set(gid, v)
+			else failByGid.delete(gid)
+		},
 		resetAll: () => {
-			generations.clear()
+			// NOTE: generations are keyed by fresh monotonic gids (never
+			// reused), so tests are self-isolating WITHOUT clearing the map.
+			// Clearing here is actively harmful: under parallel workers (or
+			// Playwright's repeat interleaving) one test's `reset` deletes
+			// another test's in-flight generation mid-attach, and its
+			// `waitAttached` times out. Only the failure arms are reset.
 			failNext = null
+			failByGid.clear()
 		},
 	}
 }
 
-export function pushFrame(gid: string, frame: Frame): void {
+export function pushFrame(gid: string, frame: Frame): { attached: boolean; closed: boolean } {
 	const g = generation(gid)
-	if (g.closed) return // terminal event already sent — late frames are dropped
+	// Terminal event already sent — late frames are dropped (mirrors Alfred
+	// closing the stream). The ack reports it so tests can assert the emit
+	// actually landed instead of timing out on a missing bubble.
+	if (g.closed) return { attached: !!g.controller, closed: true }
 	// Encode at push time (seq stamped now) and deliver or queue BYTES.
 	// Queueing bytes (never frames) fixes the emit/send race: two rapid
 	// `emit()` calls encode in POST-arrival order, and the flush path can
@@ -148,9 +167,10 @@ export function pushFrame(gid: string, frame: Frame): void {
 		// Terminal: close AFTER enqueueing so the client's SSE loop ends
 		// and `status` settles (mirrors Alfred closing the stream).
 		closeGeneration(gid)
-		return
+		return { attached: !!g.controller, closed: false }
 	}
 	for (const w of g.waiters.splice(0)) w()
+	return { attached: !!g.controller, closed: false }
 }
 
 export function closeGeneration(gid: string): void {

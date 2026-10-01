@@ -11,7 +11,14 @@ import type { RequestHandler } from './$types'
  */
 export const GET: RequestHandler = async ({ params }) => {
 	const gid = params.gid ?? 'gen_e2e_1'
-	const { generations, getFailNext, setFailNext } = __mockState()
+	const { generations, getFailNext, setFailNext, getFailGid, setFailGid } = __mockState()
+	// Per-generation arm wins (parallel-safe: only this gid's attach can
+	// consume it); the legacy global one-shot is the fallback.
+	const failGid = getFailGid(gid)
+	if (failGid) {
+		setFailGid(gid, null)
+		return Response.json({ detail: failGid.detail }, { status: failGid.status })
+	}
 	const fail = getFailNext()
 	if (fail) {
 		setFailNext(null)

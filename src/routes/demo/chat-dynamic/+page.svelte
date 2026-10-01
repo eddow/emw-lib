@@ -34,6 +34,23 @@
 		const res = await fetch('/demo/chat-dynamic/next-gid', { method: 'POST' })
 		const body = (await res.json()) as { gid: string }
 		gid = body.gid
+		// E2E hook for the attach-failure test: the test plants
+		// `window.__e2eFailNext` BEFORE clicking send; the arm lands HERE —
+		// after the gid is minted but before the credential is returned
+		// (the attach GET follows `onsend` resolving). Per-gid arming is
+		// parallel-safe: only THIS generation's attach can consume it, so
+		// no other test sharing the preview server can steal or be
+		// poisoned by it — even with Playwright's repeat interleaving.
+		const fail = (window as unknown as { __e2eFailNext?: { status: number; detail: string } })
+			.__e2eFailNext
+		if (fail) {
+			;(window as unknown as { __e2eFailNext?: unknown }).__e2eFailNext = undefined
+			await fetch('/demo/chat-dynamic/control-fail', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ ...fail, gid })
+			})
+		}
 		const next = {
 			generation_id: gid,
 			stream_token: 'e2e-token',

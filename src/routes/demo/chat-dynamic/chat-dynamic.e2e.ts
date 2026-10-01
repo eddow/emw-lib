@@ -12,32 +12,34 @@ import { expect, type Page, test } from '@playwright/test'
 
 type Frame = Record<string, unknown>
 
-async function emit(page: Page, frame: Frame): Promise<{ attached: boolean; queued: number }> {
+type EmitAck = { ok: boolean; attached: boolean; closed: boolean; queued: number }
+
+async function emit(page: Page, frame: Frame): Promise<EmitAck> {
 	// Await the POST and return the server ack: `attached` proves the mock
-	// stream reader was live (no pre-attach queue involved).
+	// stream reader was live (no pre-attach queue involved); `closed`
+	// reports a late emit onto an already-terminal generation (dropped —
+	// mirrors Alfred closing the stream). Callers assert `ok` so a dropped
+	// frame fails fast instead of timing out on a missing bubble.
 	const res = (await page.evaluate(
 		(f) =>
 			(window as unknown as { __mock: { emit: (x: unknown) => Promise<unknown> } }).__mock.emit(f),
 		frame
 	)) as unknown
 	if (res instanceof Response) {
-		return (await res.json()) as { attached: boolean; queued: number }
+		return (await res.json()) as EmitAck
 	}
-	return res as { attached: boolean; queued: number }
+	return res as EmitAck
 }
 
 test.describe('dynamic chat', () => {
-	// Serial: repeats of one test share the preview server's module-level
-	// `generations` map, and a `reset` racing an in-flight attach from the
-	// previous repeat leaves the new generation unattached (`waitAttached`
-	// times out). Serial execution keeps reset → goto → send → attach
-	// strictly ordered (verified 54/54 with `--repeat-each=3 --workers=1`;
-	// parallel workers flake ~8/54 on `waitAttached` alone).
-	test.describe.configure({ mode: 'serial' })
 	test.beforeEach(async ({ page }) => {
 		// Isolate the mock server: `vite preview` is ONE process, so its
-		// module-level `generations` map survives across tests. Reset it,
-		// then load the page (which starts with `gen_e2e_0`, no stream).
+		// module-level failure arms survive across tests. Generations need
+		// NO reset — `freshGid()` mints a monotonic id per `prompt`, so
+		// tests are self-isolating by construction (clearing the map
+		// mid-flight deletes another worker's in-flight generation and its
+		// `waitAttached` times out — the parallel flake). Only the arms
+		// are cleared.
 		await page.request.post('/demo/chat-dynamic/reset')
 		await page.goto('/demo/chat-dynamic')
 	})
@@ -243,9 +245,20 @@ test.describe('dynamic chat', () => {
 		])
 
 		// The loop continues on the same stream after the answer.
-		await emit(page, { kind: 'human_answer', tool_call_id: 'call_1' })
-		await emit(page, { kind: 'answer', text: 'thanks, continuing' })
-		await emit(page, { kind: 'done', reason: 'stop' })
+		// Assert the acks: a `closed: true` ack means the emit landed on an
+		// already-terminal generation (dropped — mirrors Alfred closing the
+		// stream) and the bubble will never render. Failing fast here beats
+		// timing out on the `toContainText` below with no diagnosis.
+		for (const frame of [
+			{ kind: 'human_answer', tool_call_id: 'call_1' },
+			{ kind: 'answer', text: 'thanks, continuing' },
+			{ kind: 'done', reason: 'stop' },
+		]) {
+			const ack = await emit(page, frame)
+			expect(ack, `emit ${JSON.stringify(frame)} dropped on closed stream`).toEqual(
+				expect.objectContaining({ ok: true, closed: false })
+			)
+		}
 		await expect(page.getByTestId('alfred-chat-messages')).toContainText('thanks, continuing')
 	})
 
@@ -313,7 +326,12 @@ test.describe('dynamic chat', () => {
 		await page.getByTestId('alfred-chat-send').click()
 		await waitAttached(page)
 		await emit(page, { kind: 'tool_use', tool_call_id: 'c1', name: 'search', args: { q: 'x' } })
-		await emit(page, { kind: 'tool_result', tool_call_id: 'c1', name: 'search', output: 'found it' })
+		await emit(page, {
+			kind: 'tool_result',
+			tool_call_id: 'c1',
+			name: 'search',
+			output: 'found it',
+		})
 		const settled = page.getByTestId('alfred-tool-settled')
 		await expect(settled).toBeVisible()
 		// Collapsed one-liner carries the summary; full args/output live
@@ -342,9 +360,11 @@ test.describe('dynamic chat', () => {
 		await emit(page, { kind: 'done', reason: 'stop' })
 	})
 
-	test('superseded/archived render a status line, stop renders nothing', async ({ page }) => {
+	test('superseded renders a status line, stop renders nothing', async ({ page }) => {
 		// Terminal `done` closes the mock stream (mirrors Alfred), so each
-		// reason needs its own generation — one `done` per stream.
+		// reason needs its own generation — one `done` per stream. Two
+		// terminal sends per test (not three): the third attach races the
+		// mock's close bookkeeping under `--repeat-each` interleaving.
 		await page.getByTestId('alfred-chat-input').fill('status me')
 		await page.getByTestId('alfred-chat-send').click()
 		await waitAttached(page)
@@ -354,21 +374,24 @@ test.describe('dynamic chat', () => {
 		// No retry box for terminal status reasons.
 		await expect(page.getByTestId('alfred-retry-box')).toHaveCount(0)
 
-		await page.getByTestId('alfred-chat-input').fill('status again')
-		await page.getByTestId('alfred-chat-send').click()
-		await waitAttached(page)
-		await emit(page, { kind: 'done', reason: 'archived' })
-		await expect(page.getByTestId('alfred-chat-messages')).toContainText('archived')
-		await expect(page.getByTestId('alfred-retry-box')).toHaveCount(0)
-
-		// `stop` renders nothing — no status line for the third generation.
+		// `stop` renders nothing — no status line for the second generation.
 		await page.getByTestId('alfred-chat-input').fill('clean finish')
 		await page.getByTestId('alfred-chat-send').click()
 		await waitAttached(page)
 		await emit(page, { kind: 'answer', text: 'all good' })
 		await emit(page, { kind: 'done', reason: 'stop' })
 		await expect(page.getByTestId('alfred-chat-messages')).toContainText('all good')
-		await expect(page.getByTestId('alfred-status-line')).toHaveCount(2)
+		await expect(page.getByTestId('alfred-status-line')).toHaveCount(1)
+	})
+
+	test('archived renders a status line with no retry box', async ({ page }) => {
+		await page.getByTestId('alfred-chat-input').fill('archive me')
+		await page.getByTestId('alfred-chat-send').click()
+		await waitAttached(page)
+		await emit(page, { kind: 'done', reason: 'archived' })
+		await expect(page.getByTestId('alfred-status-line').first()).toBeVisible()
+		await expect(page.getByTestId('alfred-chat-messages')).toContainText('archived')
+		await expect(page.getByTestId('alfred-retry-box')).toHaveCount(0)
 	})
 
 	test('Stop button aborts the stream and keeps the transcript', async ({ page }) => {
@@ -388,18 +411,17 @@ test.describe('dynamic chat', () => {
 	})
 
 	test('attach failure surfaces an alert and keeps the composer', async ({ page }) => {
-		// `failNext` answers the NEXT stream GET with an HTTP error: arm it
-		// AFTER the composer is visible (so `window.__mock` exists) but
-		// BEFORE the send whose attach must fail (the attach GET follows
-		// `onsend` immediately). The failure surfaces as `role=alert` and
-		// the composer stays usable.
+		// `failNext` answers the NEXT stream GET with an HTTP error. Arming
+		// happens INSIDE the send flow (the host's `nextCredentialAsync`
+		// arms right before minting the gid), so the arm→mint→attach order
+		// is airtight: no other stream GET can slip between, even with
+		// Playwright's repeat interleaving (serial orders tests, not
+		// repeats). The test only plants the flag, then clicks send.
 		await page.getByTestId('alfred-chat-input').fill('doomed')
-		await page.evaluate(() =>
-			(window as unknown as { __mock: { failNext: (s: number, d: string) => unknown } }).__mock.failNext(
-				410,
-				'generation ended'
-			)
-		)
+		await page.evaluate(() => {
+			;(window as unknown as { __e2eFailNext?: { status: number; detail: string } }).__e2eFailNext =
+				{ status: 410, detail: 'generation ended' }
+		})
 		await page.getByTestId('alfred-chat-send').click()
 		await expect(page.getByTestId('alfred-chat-error')).toContainText('generation ended')
 		await expect(page.getByTestId('alfred-chat-send')).toBeVisible()
