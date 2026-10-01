@@ -294,8 +294,12 @@ export const reroute: Reroute = (request) => deLocalizeUrl(request.url).pathname
 ```
 
 - `src/routes/+layout.svelte` + `src/routes/layout.css`
-  (`@import 'tailwindcss';`) — copy from `arb2b` (layout imports the css,
-  sets favicon, renders hidden locale links for prerender discovery).
+  (`@import 'tailwindcss';` + `@import 'emw-lib/theme.css';` — the shared
+  light/dark tokens + native form base, so minimal apps never render UA
+  white inputs in dark mode; full-shadcn apps like `emw` define their own
+  tokens and skip the second import) — copy `layout.css` from `arb2b`
+  (layout imports the css, sets favicon, renders hidden locale links for
+  prerender discovery).
 - `src/lib/assets/favicon.svg` — copy (referenced by the layout).
 - `static/robots.txt` (`User-agent: *` / empty `Disallow`) — copy.
 - `src/lib/index.ts` — `$lib` placeholder (`// place files …` comment).

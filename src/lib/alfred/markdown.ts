@@ -42,7 +42,10 @@ function inline(s: string): string {
 			'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
 		)
 		// Bare autolinks.
-		.replace(/(^|\s)(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>')
+		.replace(
+			/(^|\s)(https?:\/\/[^\s<]+)/g,
+			'$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>'
+		)
 	for (let i = 0; i < codes.length; i++) {
 		out = out.replace(`\u0000${i}\u0000`, codes[i] as string)
 	}

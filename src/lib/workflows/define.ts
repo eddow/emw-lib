@@ -79,16 +79,49 @@ function registryKey(name: string, version: number): string {
  * Wrap an async workflow function with its meta and register it.
  * Returns the `{ name, version, fn, describeStep, ... }` definition.
  *
- * Re-registering the same `name@version` throws: a double-import must
- * never silently swap the function a run replays against (replay runs
- * byte-identical code by deployment pinning, specs §8).
+ * The registry is a module-level in-memory `Map` in this file, on the
+ * server process: importing a workflow module (e.g. arb2b's
+ * `marketAnalysis.ts` via `workflows/index.ts`) runs its top-level
+ * `defineAsyncWorkflow(...)` call, which puts `{ name@version → def }`
+ * in the map. Routes then resolve via `getAsyncWorkflow` / enumerate
+ * via `listAsyncWorkflows` — so a page load itself adds nothing, it
+ * only reads what the import already registered.
+ *
+ * Re-registering the identical function reference is a no-op (returns
+ * the existing def): in dev, Vite HMR re-evaluates the workflow module
+ * without re-evaluating this file, and a poisoned entry would otherwise
+ * throw on every later request — including F5, which retries the failed
+ * module evaluation against the stale map. Same source text (new closure
+ * from re-evaluation) replaces the entry. A genuinely different function
+ * under the same `name@version` still throws: it must never silently swap
+ * the function a run replays against (replay runs byte-identical code by
+ * deployment pinning, specs §8).
  */
 export function defineAsyncWorkflow<W_I, W_O, R extends ToolRegistry = ToolRegistry>(
 	fn: (wf: WFContext<R>, input: W_I) => Promise<W_O>,
 	meta: AsyncWorkflowMeta
 ): AsyncWorkflowDef<W_I, W_O, R> {
 	const key = registryKey(meta.name, meta.version)
-	if (registry.has(key)) throw new Error(`async workflow already registered: ${key}`)
+	const existing = registry.get(key)
+	if (existing) {
+		if (existing.fn === fn) return existing as unknown as AsyncWorkflowDef<W_I, W_O, R>
+		if (existing.fn.toString() === fn.toString()) {
+			const def: AsyncWorkflowDef<W_I, W_O, R> = {
+				name: meta.name,
+				version: meta.version,
+				fn,
+				describeStep: meta.describeStep,
+				outputSchema: meta.outputSchema,
+				title: meta.title,
+				description: meta.description,
+				inputSpec: meta.inputSpec,
+				outputLabels: meta.outputLabels,
+			}
+			registry.set(key, def as unknown as AsyncWorkflowDef<unknown, unknown, ToolRegistry>)
+			return def
+		}
+		throw new Error(`async workflow already registered: ${key}`)
+	}
 	const def: AsyncWorkflowDef<W_I, W_O, R> = {
 		name: meta.name,
 		version: meta.version,

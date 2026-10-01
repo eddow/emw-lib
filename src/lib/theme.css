@@ -1,0 +1,230 @@
+/**
+ * Shared theme tokens + native form base (import via `emw-lib/theme.css`).
+ *
+ * Minimal hosts (`arb2b`) ship no shadcn palette — only `--menu-*` — so
+ * lib components fall back to their light defaults (`var(--input,
+ * oklch(...))`, `var(--background, #fff)`) while `body` is dark: white
+ * inputs on a dark page. Full hosts (`emw`) already define these tokens
+ * in their own `layout.css` and need no import.
+ *
+ * This file is the single source of truth for the light/dark token values
+ * (copied from `emw`'s `layout.css`): `:root` = light, `:root.dark`/`dark`
+ * = dark (both selectors — the first-paint script sets `documentElement`
+ * = `:root`, some hosts toggle a plain `.dark` wrapper). It also gives
+ * native `input`/`textarea`/`select` a theme-aware base so host pages that
+ * style fields with bare Tailwind `border` classes (no `bg-*`) never render
+ * the UA white field in dark mode, plus a native `button` base so bare
+ * `<button>` (lib panes, host pages) renders a themed secondary button
+ * instead of the UA grey. Utilities and component `<style>` still win
+ * (`@layer base`).
+ *
+ * Host wiring (minimal app):
+ *
+ * ```css
+ * @import 'tailwindcss';
+ * @import 'emw-lib/theme.css';
+ * ```
+ */
+
+:root {
+	--menu-bg: #ffffff;
+	--menu-fg: #111827;
+	--menu-border: #d1d5db;
+	--menu-accent: #1a4f8a;
+	--user-config-bg: #ffffff;
+	--user-config-fg: #111827;
+	--user-config-border: #d1d5db;
+	--user-config-accent: #1a4f8a;
+	color-scheme: light;
+	--background: oklch(1 0 0);
+	--foreground: oklch(0.145 0 0);
+	--card: oklch(1 0 0);
+	--card-foreground: oklch(0.145 0 0);
+	--popover: oklch(1 0 0);
+	--popover-foreground: oklch(0.145 0 0);
+	--primary: oklch(0.205 0 0);
+	--primary-foreground: oklch(0.985 0 0);
+	--secondary: oklch(0.97 0 0);
+	--secondary-foreground: oklch(0.205 0 0);
+	--muted: oklch(0.97 0 0);
+	--muted-foreground: oklch(0.556 0 0);
+	--accent: oklch(0.97 0 0);
+	--accent-foreground: oklch(0.205 0 0);
+	--destructive: oklch(0.577 0.245 27.325);
+	--border: oklch(0.922 0 0);
+	--input: oklch(0.922 0 0);
+	--ring: oklch(0.708 0 0);
+	--chart-1: oklch(0.87 0 0);
+	--chart-2: oklch(0.556 0 0);
+	--chart-3: oklch(0.439 0 0);
+	--chart-4: oklch(0.371 0 0);
+	--chart-5: oklch(0.269 0 0);
+	--radius: 0.625rem;
+	--sidebar: oklch(0.985 0 0);
+	--sidebar-foreground: oklch(0.145 0 0);
+	--sidebar-primary: oklch(0.205 0 0);
+	--sidebar-primary-foreground: oklch(0.985 0 0);
+	--sidebar-accent: oklch(0.97 0 0);
+	--sidebar-accent-foreground: oklch(0.205 0 0);
+	--sidebar-border: oklch(0.922 0 0);
+	--sidebar-ring: oklch(0.708 0 0);
+}
+
+:root.dark,
+.dark {
+	--menu-bg: #111827;
+	--menu-fg: #f9fafb;
+	--menu-border: #374151;
+	--menu-accent: #60a5fa;
+	--user-config-bg: #1f2937;
+	--user-config-fg: #f3f4f6;
+	--user-config-border: #4b5563;
+	--user-config-accent: #5b9bd5;
+	color-scheme: dark;
+	--background: oklch(0.145 0 0);
+	--foreground: oklch(0.985 0 0);
+	--card: oklch(0.205 0 0);
+	--card-foreground: oklch(0.985 0 0);
+	--popover: oklch(0.205 0 0);
+	--popover-foreground: oklch(0.985 0 0);
+	--primary: oklch(0.922 0 0);
+	--primary-foreground: oklch(0.205 0 0);
+	--secondary: oklch(0.269 0 0);
+	--secondary-foreground: oklch(0.985 0 0);
+	--muted: oklch(0.269 0 0);
+	--muted-foreground: oklch(0.708 0 0);
+	--accent: oklch(0.269 0 0);
+	--accent-foreground: oklch(0.985 0 0);
+	--destructive: oklch(0.704 0.191 22.216);
+	--border: oklch(1 0 0 / 10%);
+	--input: oklch(1 0 0 / 15%);
+	--ring: oklch(0.556 0 0);
+	--chart-1: oklch(0.87 0 0);
+	--chart-2: oklch(0.556 0 0);
+	--chart-3: oklch(0.439 0 0);
+	--chart-4: oklch(0.371 0 0);
+	--chart-5: oklch(0.269 0 0);
+	--sidebar: oklch(0.205 0 0);
+	--sidebar-foreground: oklch(0.985 0 0);
+	--sidebar-primary: oklch(0.488 0.243 264.376);
+	--sidebar-primary-foreground: oklch(0.985 0 0);
+	--sidebar-accent: oklch(0.269 0 0);
+	--sidebar-accent-foreground: oklch(0.985 0 0);
+	--sidebar-border: oklch(1 0 0 / 10%);
+	--sidebar-ring: oklch(0.556 0 0);
+}
+
+@theme inline {
+	--color-sidebar-ring: var(--sidebar-ring);
+	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+	--color-sidebar-accent: var(--sidebar-accent);
+	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+	--color-sidebar-primary: var(--sidebar-primary);
+	--color-sidebar-foreground: var(--sidebar-foreground);
+	--color-sidebar: var(--sidebar);
+	--color-chart-5: var(--chart-5);
+	--color-chart-4: var(--chart-4);
+	--color-chart-3: var(--chart-3);
+	--color-chart-2: var(--chart-2);
+	--color-chart-1: var(--chart-1);
+	--color-ring: var(--ring);
+	--color-input: var(--input);
+	--color-border: var(--border);
+	--color-destructive: var(--destructive);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-accent: var(--accent);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-muted: var(--muted);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-secondary: var(--secondary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-primary: var(--primary);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-popover: var(--popover);
+	--color-card-foreground: var(--card-foreground);
+	--color-card: var(--card);
+	--color-foreground: var(--foreground);
+	--color-background: var(--background);
+}
+
+/* Native form base: bare `border`-only fields (host pages + lib
+ * components without explicit `bg-*`) follow the theme instead of the UA
+ * white field. Bare `button` gets the themed secondary-button look so
+ * lib panes + host pages never render the UA grey button; explicit
+ * `bg-*`/component styles still win (`@layer base`). Checkboxes/radios
+ * keep native rendering (`color-scheme` already adapts them). */
+@layer base {
+	button {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.375rem;
+		padding: 0.375rem 0.875rem;
+		border: 1px solid var(--border, oklch(0.922 0 0));
+		border-radius: calc(var(--radius, 0.625rem) - 2px);
+		background-color: var(--secondary, oklch(0.97 0 0));
+		color: var(--secondary-foreground, oklch(0.205 0 0));
+		font-size: 0.875rem;
+		font-weight: 500;
+		line-height: 1.25rem;
+		cursor: pointer;
+		transition:
+			background-color 0.15s,
+			border-color 0.15s,
+			opacity 0.15s;
+	}
+
+	button:hover {
+		background-color: color-mix(
+			in oklch,
+			var(--secondary, oklch(0.97 0 0)) 60%,
+			var(--accent, oklch(0.97 0 0))
+		);
+	}
+
+	button:focus-visible {
+		outline: 2px solid var(--ring, oklch(0.708 0 0));
+		outline-offset: 2px;
+	}
+
+	button:disabled {
+		cursor: not-allowed;
+		opacity: 0.5;
+	}
+
+	button[type='submit'] {
+		background-color: var(--primary, oklch(0.205 0 0));
+		color: var(--primary-foreground, oklch(0.985 0 0));
+		border-color: transparent;
+	}
+
+	button[type='submit']:hover {
+		background-color: color-mix(
+			in oklch,
+			var(--primary, oklch(0.205 0 0)) 85%,
+			var(--foreground, oklch(0.145 0 0))
+		);
+	}
+
+	input:not([type='checkbox']):not([type='radio']):not([type='button']):not(
+			[type='submit']
+		):not([type='reset']):not([type='color']):not([type='range']),
+	textarea,
+	select {
+		background-color: var(--background);
+		color: var(--foreground);
+		border-color: var(--border);
+	}
+
+	input::placeholder,
+	textarea::placeholder {
+		color: var(--muted-foreground);
+		opacity: 1;
+	}
+
+	select option {
+		background-color: var(--popover);
+		color: var(--popover-foreground);
+	}
+}

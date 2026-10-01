@@ -203,9 +203,45 @@ const result = await tick(runId, {
 })
 ```
 
-4. **Prompt resolution** (Alfred generation webhook): run the §2.2 ladder + `expectedSchema.safeParse` over the terminal answer, then `resolveInteraction(runId, idx, { status: 'resolved', output } | { status: 'failed', error })`. Emit `interaction_resolved` + `human_*`/`log` on the host transport.
-5. **Pinning**: FE play/pause/cancel, tool webhooks and evolution notifications all POST to `run.deployment_url`, never HEAD. Stale runs emit `version_stale` and continue; pruned deployments get `error('deployment_gone')` via `markDeploymentGone` through HEAD.
-6. **Vercel hardening**: bypass tokens for protected deployments, CORS for FE→deployment host, pruning-retention policy (all three before §8 is real in preview).
+4. **Stream route** (`GET /api/workflows/[runId]/stream?after_idx=N`, poll-only for
+v1 — no SSE, no new tables): replay journal rows with `idx >= N` as
+`interaction_opened` + `interaction_resolved` events plus terminal `run_status`.
+Ask-human exception: open + answered `ask-human` rows also ship
+`askHuman: [{ idx, question, options, answer? }]` (from `input_json` /
+`output_json`) so the pinned card renders the real question, not the
+`describeStep` one-liner. Nothing else crosses the wire. Reference:
+`arb2b/src/routes/api/workflows/[runId]/stream/+server.ts`.
+5. **Cancel route** (`POST /api/workflows/[runId]/cancel`): `cancelRun(runId, sql)`
+(terminal-guarded in the lib — no-op on `done`/`error`/`cancelled`); journal
+preserved, no re-execution. Ownership re-checked (`getOwnRun`, 404 otherwise).
+6. **Answer route** (`POST /api/workflows/[runId]/answer`, body `{ idx, answer }`):
+`resolveInteraction(runId, idx, { status: 'resolved', output: answer })` (open-only —
+a second answer is a 409), then re-tick past it in the same round-trip so the FE
+sees the continuation immediately. Ownership re-checked.
+7. **Catalogue route** (`GET /api/workflows/catalogue`): picker catalogue from the
+deploy-time registry (`listAsyncWorkflows` meta only:
+name/version/title/description/inputSpec/outputLabels — no function bodies).
+8. **Prompt resolution** (Alfred generation webhook
+`POST /api/workflows/[runId]/resolve`, public, `X-Alfred-Secret`): body
+`{ session_id, generation_id, answer?/text?/output?, error? }` — NO `idx`
+(Alfred never knew it). Resolve the target open prompt row by matching the
+generation's `session_id` against prompt rows' `input_json.sessionId` (one live
+generation per session ⇒ at most one open prompt row; two = 409). Run the §2.2
+ladder (`extractJsonValue`) + `expectedSchema.safeParse` over the terminal answer,
+then `resolveInteraction`; the next `tick` replays past the row. Emit
+`interaction_resolved` + `human_*`/`log` on the host transport.
+9. **FE integration** (`arb2b/src/routes/chat/` reference, plan
+`plans/workflow-ui.md` §§3.4–3.5, 5.3–5.4): `WorkflowDetail` owns the run lifecycle
+the lib `WorkflowPane` renders (`starting` → `running` → terminal). Client
+tick-driving — POST `.../tick` every 1s while non-terminal (the stream poll alone
+never advances the journal); `waiting` folds into `running` on the FE. Server
+`load` seeds journal-derived `{ status, returnValue, interactions, askHuman }` as
+`initial` (first paint is journal-derived, never empty on reload). Follow-up chat
+sends hidden `workflowInput`/`workflowOutput` + `model` (server seeds the §3.4
+system prompt). Per-user scoping: every query carries `WHERE user_id =
+locals.user.id` (pinned by `isolation.test.ts`).
+10. **Pinning**: FE play/pause/cancel, tool webhooks and evolution notifications all POST to `run.deployment_url`, never HEAD. Stale runs emit `version_stale` and continue; pruned deployments get `error('deployment_gone')` via `markDeploymentGone` through HEAD.
+11. **Vercel hardening**: bypass tokens for protected deployments, CORS for FE→deployment host, pruning-retention policy (all three before §8 is real in preview).
 
 ## Open host work (engine done, host-side residuals)
 

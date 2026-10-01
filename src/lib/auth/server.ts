@@ -3,26 +3,28 @@
  * browser code or the client-safe barrel).
  *
  * The host app owns the DB pool + env; the lib owns the better-auth config
- * shape so every app (`arb2b` today, `emw` later) gets the same tables,
- * roles and preference fields. Each app has its OWN database, so roles live
- * directly on the user row (`{ user: roles }`) — no cross-app membership
- * table.
+ * shape so every app gets the same tables, roles and preference fields.
+ * Each app has its OWN database, so roles live directly on the user row —
+ * no cross-app membership table.
  *
- * User extras (better-auth `additionalFields`, columns in `0000`):
- * - `role`: comma-separated roles (`admin,editor,viewer`). better-auth's
- *   `admin` plugin convention is a single `role` string; multi-role is a
- *   comma list parsed by `parseRoles`/`serializeRoles`.
- * - `locale` / `theme`: persisted UI preferences — the SSR/FE decision
- *   layer reads cookie > DB row > browser default (`resolvePreference`).
+ * User extras (`additionalFields`, columns in `0000`):
+ * - `role`: comma-separated roles (`admin,editor,viewer`), parsed by
+ *   `parseRoles`/`serializeRoles`.
+ * - `locale` / `theme`: persisted UI preferences (cookie > DB row > browser).
  */
 
-import { betterAuth } from 'better-auth'
+import { type BetterAuthOptions, type BetterAuthPlugin, betterAuth } from 'better-auth'
 import { admin } from 'better-auth/plugins'
+
+export interface OAuthCred {
+	clientId: string
+	clientSecret: string
+}
 
 export interface AuthEnv {
 	/** Session-cookie signing secret (`AUTH_SECRET`). Empty = throw. */
 	secret: string
-	/** Public base URL (`PUBLIC_BASE_URL` / `BETTER_AUTH_URL`). */
+	/** Public base URL (`PUBLIC_BASE_URL`). */
 	baseUrl: string
 	/** `AUTH_ENABLED_PROVIDERS` allowlist — unlisted providers are rejected. */
 	enabledProviders?: string
@@ -35,12 +37,12 @@ export interface AuthEnv {
 	 */
 	trustedOrigins?: string[]
 	/** OAuth client pairs, present only for enabled providers. */
-	google?: { clientId: string; clientSecret: string }
-	microsoft?: { clientId: string; clientSecret: string; tenant?: string }
-	apple?: { clientId: string; clientSecret: string }
-	github?: { clientId: string; clientSecret: string }
-	gitlab?: { clientId: string; clientSecret: string; issuer?: string }
-	linkedin?: { clientId: string; clientSecret: string }
+	google?: OAuthCred
+	microsoft?: OAuthCred & { tenant?: string }
+	apple?: OAuthCred
+	github?: OAuthCred
+	gitlab?: OAuthCred & { issuer?: string }
+	linkedin?: OAuthCred
 	/** Resend key for verification / reset-password emails (optional). */
 	resendApiKey?: string
 	/** From address for auth emails. */
@@ -51,8 +53,7 @@ export interface AuthEnv {
 	 * this module stays free of SvelteKit app imports — the lib never
 	 * imports `$app/*` (same rule as `$lib/server`/env reads).
 	 */
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	sveltekitCookiesPlugin?: any
+	sveltekitCookiesPlugin?: BetterAuthPlugin
 }
 
 export interface AuthDb {
@@ -61,17 +62,21 @@ export interface AuthDb {
 	 * (`pg`, Neon-compatible) — the built-in Kysely adapter speaks Postgres
 	 * directly, no ORM needed.
 	 */
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	database: any
+	database: BetterAuthOptions['database']
+}
+
+/** Split a comma-separated env/list value into trimmed non-empty parts. */
+function splitList(raw: string | undefined | null): string[] {
+	return (raw ?? '')
+		.split(',')
+		.map((s) => s.trim())
+		.filter(Boolean)
 }
 
 /** Split a stored `role` column (`"admin,editor"`) into roles. */
 export function parseRoles(raw: unknown): string[] {
 	if (typeof raw !== 'string') return []
-	return raw
-		.split(',')
-		.map((s) => s.trim())
-		.filter(Boolean)
+	return splitList(raw)
 }
 
 /** Join roles for the `role` column. Sorted + deduped for stable writes. */
@@ -81,24 +86,18 @@ export function serializeRoles(roles: string[]): string {
 
 /** Provider ids enabled by the allowlist (lower-cased, deduped). */
 export function enabledProviderIds(allowlist: string | undefined): Set<string> {
-	return new Set(
-		(allowlist ?? '')
-			.split(',')
-			.map((s) => s.trim().toLowerCase())
-			.filter(Boolean)
-	)
+	return new Set(splitList(allowlist).map((s) => s.toLowerCase()))
 }
 
 /** Social provider ids the lib knows (`AuthEnv` keys). */
 const SOCIAL_IDS = ['google', 'microsoft', 'apple', 'github', 'gitlab', 'linkedin'] as const
 
-function credFor(env: AuthEnv, id: (typeof SOCIAL_IDS)[number]) {
-	return env[id]
-}
-
 /**
  * Build an `AuthEnv` from a raw env record (e.g. SvelteKit's
- * `$env/dynamic/private`). Centralizes the `AUTH_*` naming convention so
+ * `$env/dynamic/private` MERGED with `$env/dynamic/public` — `PUBLIC_*`
+ * vars are excluded from the private module at runtime, so the host must
+ * spread both: `readAuthEnv({ ...privateEnv, ...publicEnv })`).
+ * Centralizes the `AUTH_*` naming convention so
  * hosts never map vars by hand:
  *
  * ```ts
@@ -123,10 +122,8 @@ export function readAuthEnv(raw: Record<string, string | undefined>): AuthEnv {
 		secret: raw.AUTH_SECRET ?? '',
 		baseUrl: raw.PUBLIC_BASE_URL ?? 'http://localhost:5173',
 		enabledProviders: raw.AUTH_ENABLED_PROVIDERS,
-		trustedOrigins: raw.AUTH_TRUSTED_ORIGINS
-			? raw.AUTH_TRUSTED_ORIGINS.split(',')
-					.map((s) => s.trim())
-					.filter(Boolean)
+		trustedOrigins: splitList(raw.AUTH_TRUSTED_ORIGINS).length
+			? splitList(raw.AUTH_TRUSTED_ORIGINS)
 			: undefined,
 		google: cred('GOOGLE'),
 		microsoft: microsoft
@@ -166,26 +163,19 @@ export function effectiveAllowlist(env: AuthEnv): string[] {
 	const out: string[] = []
 	if (!hasAllowlist || allowed.has('email')) out.push('email')
 	for (const id of SOCIAL_IDS) {
-		const cred = credFor(env, id)
+		const cred: OAuthCred | undefined = env[id]
 		if (cred?.clientId && cred?.clientSecret && (!hasAllowlist || allowed.has(id))) out.push(id)
 	}
 	return out
 }
 
-function buildSocialProviders(
-	env: AuthEnv
-): Record<string, { clientId: string; clientSecret: string }> {
+function buildSocialProviders(env: AuthEnv): Record<string, OAuthCred> {
 	const effective = new Set(effectiveAllowlist(env))
-	const out: Record<string, { clientId: string; clientSecret: string }> = {}
-	const maybe = (id: string, cred: { clientId: string; clientSecret: string } | undefined) => {
+	const out: Record<string, OAuthCred> = {}
+	for (const id of SOCIAL_IDS) {
+		const cred: OAuthCred | undefined = env[id]
 		if (effective.has(id) && cred?.clientId && cred?.clientSecret) out[id] = cred
 	}
-	maybe('google', env.google)
-	maybe('microsoft', env.microsoft)
-	maybe('apple', env.apple)
-	maybe('github', env.github)
-	maybe('gitlab', env.gitlab)
-	maybe('linkedin', env.linkedin)
 	return out
 }
 
@@ -317,6 +307,3 @@ export async function populateLocals(
 	event.locals.locale = session?.user?.locale ?? null
 	event.locals.theme = session?.user?.theme ?? null
 }
-
-/** @deprecated Use `populateLocals` — the host owns `svelteKitHandler`. */
-export const authHandle = populateLocals

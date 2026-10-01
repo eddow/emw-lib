@@ -59,15 +59,30 @@ describe('defineAsyncWorkflow', () => {
 	})
 
 	it('duplicate name@version throws (no silent overwrite)', () => {
-		expect.assertions(2)
+		expect.assertions(4)
 		clearAsyncWorkflows()
 		defineAsyncWorkflow(marketplaceAnalysis, {
 			name: 'marketplaceAnalysis',
 			version: 1,
 			describeStep: ({ label }) => `Step ${label}`,
 		})
+		// Same reference re-evaluated (dev HMR): no-op, returns the def.
+		const same = defineAsyncWorkflow(marketplaceAnalysis, {
+			name: 'marketplaceAnalysis',
+			version: 1,
+			describeStep: ({ label }) => `Step ${label}`,
+		})
+		expect(same.fn).toBe(marketplaceAnalysis)
+		expect(listAsyncWorkflows()).toHaveLength(1)
+		// Genuinely different function under the same key still throws.
+		async function otherAnalysis(
+			_ctx: WFContext<ExampleRegistry>,
+			_input: WFInput
+		): Promise<WFOutput> {
+			return 'other'
+		}
 		expect(() =>
-			defineAsyncWorkflow(marketplaceAnalysis, {
+			defineAsyncWorkflow(otherAnalysis, {
 				name: 'marketplaceAnalysis',
 				version: 1,
 				describeStep: ({ label }) => `Step ${label}`,
@@ -80,6 +95,28 @@ describe('defineAsyncWorkflow', () => {
 			describeStep: ({ label }) => `Step ${label}`,
 		})
 		expect(listAsyncWorkflows()).toHaveLength(2)
+		clearAsyncWorkflows()
+	})
+
+	it('same source re-evaluation replaces the entry (dev HMR)', () => {
+		expect.assertions(3)
+		clearAsyncWorkflows()
+		defineAsyncWorkflow(marketplaceAnalysis, {
+			name: 'marketplaceAnalysis',
+			version: 1,
+			describeStep: ({ label }) => `Step ${label}`,
+		})
+		// Fresh closure, identical source (what HMR re-evaluation produces).
+		// biome-ignore lint/security/noGlobalEval: test-only simulation of an HMR re-evaluation
+		const again = eval(`(${marketplaceAnalysis.toString()})`) as typeof marketplaceAnalysis
+		const def = defineAsyncWorkflow(again, {
+			name: 'marketplaceAnalysis',
+			version: 1,
+			describeStep: ({ label }) => `Step ${label}`,
+		})
+		expect(def.fn).toBe(again)
+		expect(getAsyncWorkflow('marketplaceAnalysis', 1)?.fn).toBe(again)
+		expect(listAsyncWorkflows()).toHaveLength(1)
 		clearAsyncWorkflows()
 	})
 
