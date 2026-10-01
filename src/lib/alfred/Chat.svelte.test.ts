@@ -549,4 +549,109 @@ describe('Chat', () => {
 		})
 		await expect.element(screen.getByTestId('alfred-thought-row')).toHaveTextContent('Réflexions')
 	})
+
+	it('surfaces an onsend throw as role=alert and keeps the composer', async () => {
+		const onsend = vi.fn(async () => {
+			throw new Error('send failed (500)')
+		})
+		const screen = await render(ChatTestHost, { credential: null, history: [], onsend })
+		await screen.getByTestId('alfred-chat-input').fill('boom')
+		await screen.getByTestId('alfred-chat-send').click()
+		await expect.element(screen.getByTestId('alfred-chat-error')).toBeVisible()
+		await expect.element(screen.getByTestId('alfred-chat-error')).toHaveTextContent('send failed')
+		// Composer is not a dead end.
+		await expect.element(screen.getByTestId('alfred-chat-send')).toBeVisible()
+	})
+
+	it('surfaces a missing send handler as role=alert', async () => {
+		const screen = await render(ChatTestHost, { credential: null, history: [], onsend: null })
+		await screen.getByTestId('alfred-chat-input').fill('hello')
+		await screen.getByTestId('alfred-chat-send').click()
+		await expect.element(screen.getByTestId('alfred-chat-error')).toBeVisible()
+		await expect
+			.element(screen.getByTestId('alfred-chat-error'))
+			.toHaveTextContent('no send handler')
+	})
+
+	it('refreshes the stream capability on 401 and retries the attach', async () => {
+		const encoder = new TextEncoder()
+		const calls: string[] = []
+		const origFetch = globalThis.fetch
+		const answer = `event: answer\ndata: ${JSON.stringify({ seq: 1, type: 'answer', payload: { text: 'recovered' }, ts: 't' })}\n\n`
+		const done = `event: done\ndata: ${JSON.stringify({ seq: 2, type: 'done', payload: { reason: 'stop' }, ts: 't' })}\n\n`
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input)
+			calls.push(url)
+			const auth = new Headers(init?.headers).get('authorization')
+			// Stale token → 401; refreshed token → the answer.
+			if (auth !== 'Bearer fresh-tok') {
+				return Response.json({ detail: 'expired' }, { status: 401 })
+			}
+			const body = new ReadableStream({
+				start(controller) {
+					controller.enqueue(encoder.encode(answer))
+					controller.enqueue(encoder.encode(done))
+					controller.close()
+				},
+			})
+			return new Response(body, { status: 200 })
+		}) as unknown as typeof fetch
+		try {
+			const refreshStream = vi.fn(async () => ({ ...CRED, stream_token: 'fresh-tok' }))
+			const screen = await render(ChatTestHost, { credential: CRED, refreshStream })
+			const messages = screen.getByTestId('alfred-chat-messages')
+			await expect
+				.element(messages.getByTestId('alfred-chat-message').first())
+				.toHaveTextContent('recovered')
+			expect(refreshStream).toHaveBeenCalledTimes(1)
+			expect(calls.filter((u) => u.includes('/streams/gen_1')).length).toBe(2)
+		} finally {
+			globalThis.fetch = origFetch
+		}
+	})
+
+	it('onretry returning a credential attaches a fresh generation (keepEvents)', async () => {
+		const encoder = new TextEncoder()
+		const origFetch = globalThis.fetch
+		const first = `event: answer\ndata: ${JSON.stringify({ seq: 1, type: 'answer', payload: { text: 'partial work' }, ts: 't' })}\n\n`
+		const terminal = `event: done\ndata: ${JSON.stringify({ seq: 2, type: 'done', payload: { reason: 'max_iterations' }, ts: 't' })}\n\n`
+		const continued = `event: answer\ndata: ${JSON.stringify({ seq: 1, type: 'answer', payload: { text: 'continued' }, ts: 't' })}\n\n`
+		const doneStop = `event: done\ndata: ${JSON.stringify({ seq: 2, type: 'done', payload: { reason: 'stop' }, ts: 't' })}\n\n`
+		globalThis.fetch = (async (input: RequestInfo | URL) => {
+			const url = String(input)
+			const body = new ReadableStream({
+				start(controller) {
+					if (url.includes('/streams/gen_2')) {
+						controller.enqueue(encoder.encode(continued))
+						controller.enqueue(encoder.encode(doneStop))
+					} else {
+						controller.enqueue(encoder.encode(first))
+						controller.enqueue(encoder.encode(terminal))
+					}
+					controller.close()
+				},
+			})
+			return new Response(body, { status: 200 })
+		}) as unknown as typeof fetch
+		try {
+			const next: StreamCredential = {
+				generation_id: 'gen_2',
+				stream_token: 'tok-2',
+				stream_url: 'http://localhost:8192/streams/gen_2',
+			}
+			const onretry = vi.fn(async (_msgId: string) => next)
+			const screen = await render(ChatTestHost, { credential: CRED, onretry })
+			await expect.element(screen.getByTestId('alfred-retry-box')).toBeVisible()
+			await screen.getByTestId('alfred-retry-button').click()
+			await vi.waitFor(() => {
+				expect(onretry).toHaveBeenCalledTimes(1)
+			})
+			// Both turns render: the retry turnover keeps prior events.
+			const messages = screen.getByTestId('alfred-chat-messages')
+			await expect.element(messages).toHaveTextContent('partial work')
+			await expect.element(messages).toHaveTextContent('continued')
+		} finally {
+			globalThis.fetch = origFetch
+		}
+	})
 })

@@ -66,6 +66,7 @@
 		onerror = null,
 		onstop = null,
 		onretry = null,
+		refreshStream = null,
 		defaultMode = 'queue',
 		toolIcons = {},
 		statusLabels = {},
@@ -124,6 +125,14 @@
 		 * a no-op (box just dismisses).
 		 */
 		onretry?: ((msgId: string) => Promise<StreamCredential | null | void> | void) | null
+		/**
+		 * Re-mint the stream capability when Alfred answers `410` (generation
+		 * ended) or `401` (expired). Called at most once per failed attach;
+		 * the BE's `play` endpoint is the source — the FE never mints.
+		 * Captured at construction (like `credential`); the host's function
+		 * must read live state when invoked, not when passed.
+		 */
+		refreshStream?: (() => Promise<StreamCredential>) | null
 		/** Main Send button mode (the dropdown overrides per-send). */
 		defaultMode?: ChatSendMode
 		/** Per-tool icons for `tool_call` rows (default 🔧). */
@@ -197,7 +206,11 @@
 		// svelte-ignore state_referenced_locally: construction-time config, a remount picks up new values.
 		streamToken: credential?.stream_token
 	})
-	const stream = new GenerationStream({ client })
+	const stream = new GenerationStream({
+		client,
+		// svelte-ignore state_referenced_locally: construction-time config, a remount picks up new values.
+		refreshStream: refreshStream ?? undefined
+	})
 	$effect(() => () => stream.dispose())
 
 	// Live credential: `onsend` may return a new credential for the CURRENT

@@ -8,6 +8,7 @@
 		onsend = null,
 		onstop = null,
 		onretry = null,
+		refreshStream = null,
 		...rest
 	}: {
 		credential?: StreamCredential | null
@@ -18,6 +19,7 @@
 			| null
 		onstop?: (() => Promise<void> | void) | null
 		onretry?: ((msgId: string) => Promise<StreamCredential | null | void> | void) | null
+		refreshStream?: (() => Promise<StreamCredential>) | null
 		// biome-ignore lint/suspicious/noExplicitAny: passthrough for label props in tests
 		[key: string]: any
 	} = $props()
@@ -35,6 +37,7 @@
 	{onsend}
 	{onstop}
 	{onretry}
+	{refreshStream}
 	{...rest}
 />
 

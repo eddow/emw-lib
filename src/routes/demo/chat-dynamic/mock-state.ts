@@ -30,11 +30,10 @@ interface Generation {
 }
 
 const generations = new Map<string, Generation>()
-let failNext: { status: number; detail: string } | null = null
 /** Per-generation failure: `POST /control-fail { gid, … }` fails only that
- * generation's stream GET. Unlike the global `failNext` one-shot (which any
- * parallel worker's attach can consume), a per-gid arm cannot leak across
- * tests sharing the preview server process. */
+ * generation's stream GET. Per-gid arming is parallel-safe: only the armed
+ * generation's attach can consume it, so no test sharing the preview
+ * server process can steal or be poisoned by another's arm. */
 const failByGid = new Map<string, { status: number; detail: string }>()
 /** Monotonic id so every `prompt` gets a fresh stream even across page reloads. */
 let nextN = 0
@@ -123,8 +122,6 @@ function sseBlock(event: Record<string, unknown>): Uint8Array {
 export function __mockState() {
 	return {
 		generations,
-		getFailNext: () => failNext,
-		setFailNext: (v: typeof failNext) => (failNext = v),
 		getFailGid: (gid: string) => failByGid.get(gid),
 		setFailGid: (gid: string, v: { status: number; detail: string } | null) => {
 			if (v) failByGid.set(gid, v)
@@ -137,7 +134,6 @@ export function __mockState() {
 			// Playwright's repeat interleaving) one test's `reset` deletes
 			// another test's in-flight generation mid-attach, and its
 			// `waitAttached` times out. Only the failure arms are reset.
-			failNext = null
 			failByGid.clear()
 		},
 	}

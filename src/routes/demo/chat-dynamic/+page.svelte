@@ -4,12 +4,12 @@
 	/**
 	 * Dynamic-chat e2e host: `AlfredChat` wired to a controllable in-page
 	 * mock chatbot. `window.__mock` exposes the harness the e2e drives:
-	 * `emit(frame)` pushes one SSE frame into the open stream, `hold()`
-	 * keeps the stream open, `close()` ends it, `fail(status, detail)`
-	 * answers the next stream request with an HTTP error.
+	 * `emit(frame)` pushes one SSE frame into the open stream, `close()`
+	 * ends it. Attach failures arm per-generation via `window.__e2eFailNext`
+	 * (consumed in `nextCredentialAsync` below).
 	 *
 	 * `onsend` returns a same-origin credential pointing at the mock SSE
-	 * endpoint below (`/demo/chat-dynamic/stream`), so no Butler is needed.
+	 * endpoint (`/demo/chat-dynamic/streams/:gid`), so no Butler is needed.
 	 */
 
 	type Frame =
@@ -31,9 +31,6 @@
 	const retriedJson = $derived(JSON.stringify(retried))
 
 	async function nextCredentialAsync(): Promise<StreamCredential> {
-		const res = await fetch('/demo/chat-dynamic/next-gid', { method: 'POST' })
-		const body = (await res.json()) as { gid: string }
-		gid = body.gid
 		// E2E hook for the attach-failure test: the test plants
 		// `window.__e2eFailNext` BEFORE clicking send; the arm lands HERE —
 		// after the gid is minted but before the credential is returned
@@ -41,15 +38,35 @@
 		// parallel-safe: only THIS generation's attach can consume it, so
 		// no other test sharing the preview server can steal or be
 		// poisoned by it — even with Playwright's repeat interleaving.
+		// The arm POST is awaited BEFORE the credential is returned, so the
+		// server has the arm before the attach GET can arrive. NOTE: this
+		// relies on `vite preview` serving ONE SvelteKit server process —
+		// `failByGid` is module-level state, so a multi-process preview
+		// (clustered/round-robin) would lose the arm. If this test ever
+		// flakes with "streaming · streaming" and no alert, check for a
+		// second preview process first (`port 4173 already in use` in the
+		// webServer log means the run reused a stale server).
 		const fail = (window as unknown as { __e2eFailNext?: { status: number; detail: string } })
 			.__e2eFailNext
+		const res = await fetch('/demo/chat-dynamic/next-gid', { method: 'POST' })
+		const body = (await res.json()) as { gid: string }
+		gid = body.gid
 		if (fail) {
 			;(window as unknown as { __e2eFailNext?: unknown }).__e2eFailNext = undefined
-			await fetch('/demo/chat-dynamic/control-fail', {
+			const arm = await fetch('/demo/chat-dynamic/control-fail', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ ...fail, gid })
 			})
+			if (!arm.ok) throw new Error(`arm failed: ${arm.status}`)
+			// Read-your-write gate: the preview server must serve the arm
+			// back before the attach GET runs. Without this, a stale
+			// multi-process preview (or a restarted webServer that kept
+			// the old port) can attach against a process that never saw
+			// the arm — the stream opens clean and no alert renders.
+			const gateRes = await fetch(`/demo/chat-dynamic/attached?gid=${gid}&armed=1`)
+			const gate = (await gateRes.json()) as { armed?: boolean }
+			if (!gate.armed) throw new Error(`arm lost for ${gid}`)
 		}
 		const next = {
 			generation_id: gid,
@@ -111,12 +128,6 @@
 				return res.json()
 			},
 			close: () => fetch(`/demo/chat-dynamic/control?gid=${gid}&op=close`, { method: 'POST' }),
-			failNext: (status: number, detail: string) =>
-				fetch('/demo/chat-dynamic/control-fail', {
-					method: 'POST',
-					headers: { 'content-type': 'application/json' },
-					body: JSON.stringify({ status, detail })
-				}),
 			sentModes: () => sentModes,
 			gid: () => gid
 		}

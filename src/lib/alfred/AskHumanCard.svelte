@@ -172,6 +172,28 @@
 		flex-wrap: wrap;
 		gap: 0.25rem;
 	}
+	/* Free-text answer: theme-aware (never the forms-plugin white) — the
+	 * card renders inside `.alfred-chat`, so its `--alfred-*` tokens apply;
+	 * fall back to the host shadcn palette, then neutrals (see `Chat`). */
+	.alfred-human-card input[type='text'] {
+		border: 1px solid var(--alfred-input, var(--input, oklch(0.922 0 0)));
+		border-radius: calc(var(--alfred-radius, 0.625rem) - 2px);
+		background: var(--alfred-bg, var(--card, oklch(1 0 0)));
+		color: var(--alfred-fg, var(--card-foreground, inherit));
+		padding: 0.375rem 0.625rem;
+		font-size: 0.875rem;
+		font-family: inherit;
+		outline: none;
+	}
+	.alfred-human-card input[type='text']::placeholder {
+		color: var(--alfred-muted, var(--muted-foreground, oklch(0.556 0 0)));
+		opacity: 1;
+	}
+	.alfred-human-card input[type='text']:focus-visible {
+		border-color: var(--alfred-ring, var(--ring, oklch(0.708 0 0)));
+		box-shadow: 0 0 0 3px
+			color-mix(in oklch, var(--alfred-ring, var(--ring, oklch(0.708 0 0))) 50%, transparent);
+	}
 	.alfred-human-selected {
 		font-weight: bold;
 	}

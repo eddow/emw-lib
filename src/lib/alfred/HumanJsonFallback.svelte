@@ -58,6 +58,7 @@
 	{:else}
 		<textarea
 			data-testid="alfred-human-json-input"
+			class="alfred-human-json-input"
 			bind:value={raw}
 			rows={3}
 			aria-label={labels.answerAsJson ?? 'Answer as JSON'}
@@ -75,3 +76,26 @@
 		<p data-testid="alfred-human-json-error" role="alert">{error}</p>
 	{/if}
 </div>
+
+<style>
+	/* Theme-aware (never the forms-plugin white) — same `--alfred-*`
+	 * tokens as `Chat` (this renders inside `.alfred-chat`). */
+	.alfred-human-json-input {
+		border: 1px solid var(--alfred-input, var(--input, oklch(0.922 0 0)));
+		border-radius: calc(var(--alfred-radius, 0.625rem) - 2px);
+		background: var(--alfred-bg, var(--card, oklch(1 0 0)));
+		color: var(--alfred-fg, var(--card-foreground, inherit));
+		padding: 0.375rem 0.625rem;
+		font-size: 0.875rem;
+		font-family: inherit;
+		resize: vertical;
+		outline: none;
+		width: 100%;
+		box-sizing: border-box;
+	}
+	.alfred-human-json-input:focus-visible {
+		border-color: var(--alfred-ring, var(--ring, oklch(0.708 0 0)));
+		box-shadow: 0 0 0 3px
+			color-mix(in oklch, var(--alfred-ring, var(--ring, oklch(0.708 0 0))) 50%, transparent);
+	}
+</style>

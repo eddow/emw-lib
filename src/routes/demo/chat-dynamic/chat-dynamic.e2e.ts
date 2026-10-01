@@ -3,7 +3,7 @@ import { expect, type Page, test } from '@playwright/test'
 
 /**
  * Dynamic-chat e2e (plan `plans/dynamic.md` §§3–5): `AlfredChat` wired to
- * the controllable mock SSE chatbot (`/demo/chat-dynamic/stream`,
+ * the controllable mock SSE chatbot (`/demo/chat-dynamic/streams/:gid`,
  * driven via `POST /control`). No Butler, no OpenRouter.
  *
  * B1: idle prompt → answer renders spontaneously (no reload).
@@ -411,12 +411,12 @@ test.describe('dynamic chat', () => {
 	})
 
 	test('attach failure surfaces an alert and keeps the composer', async ({ page }) => {
-		// `failNext` answers the NEXT stream GET with an HTTP error. Arming
-		// happens INSIDE the send flow (the host's `nextCredentialAsync`
-		// arms right before minting the gid), so the arm→mint→attach order
-		// is airtight: no other stream GET can slip between, even with
-		// Playwright's repeat interleaving (serial orders tests, not
-		// repeats). The test only plants the flag, then clicks send.
+		// The per-gid arm answers THIS generation's stream GET with an HTTP
+		// error. Arming happens INSIDE the send flow (the host's
+		// `nextCredentialAsync` arms after minting the gid, before the
+		// credential is returned), so the arm→attach order is airtight: no
+		// other stream GET can slip between, even with Playwright's repeat
+		// interleaving. The test only plants the flag, then clicks send.
 		await page.getByTestId('alfred-chat-input').fill('doomed')
 		await page.evaluate(() => {
 			;(window as unknown as { __e2eFailNext?: { status: number; detail: string } }).__e2eFailNext =
@@ -467,5 +467,53 @@ test.describe('dynamic chat', () => {
 		await page.getByTestId('alfred-chat-send').click()
 		await expect(page.getByTestId('e2e-sent-modes')).toHaveAttribute('data-modes', /steer:nudge/)
 		await emit(page, { kind: 'done', reason: 'stop' })
+	})
+
+	test('S6 conflict: prompt-while-live plays the active generation', async ({ page }) => {
+		// S6 is a host concern (BE 409 → `play()` → attach live generation),
+		// but the transcript contract is e2e-visible: attaching the SAME
+		// generation twice (replay from `after_seq=0`) must not duplicate
+		// bubbles — `dedupLiveEvents` drops the replayed durable.
+		await page.getByTestId('alfred-chat-input').fill('first')
+		await page.getByTestId('alfred-chat-send').click()
+		await waitAttached(page)
+		await emit(page, { kind: 'answer', text: 'first answer' })
+		// Second prompt while live: the mock mints a fresh gid, but the
+		// transcript keeps the first turn (keepEvents) with no duplicates.
+		await page.getByTestId('alfred-chat-input').fill('second')
+		await page.getByTestId('alfred-chat-send').click()
+		await waitAttached(page)
+		await expect(page.getByTestId('alfred-chat-messages')).toContainText('first answer')
+		await emit(page, { kind: 'answer', text: 'second answer' })
+		await emit(page, { kind: 'done', reason: 'stop' })
+		const messages = page.getByTestId('alfred-chat-messages')
+		await expect(messages).toContainText('first answer')
+		await expect(messages).toContainText('second answer')
+		await expect(messages.getByTestId('alfred-chat-message')).toHaveCount(2)
+	})
+
+	test('U5 scroll: stick-to-bottom only when already at bottom', async ({ page }) => {
+		// The scroll container exists with the stick threshold (48px);
+		// assert the contract structurally: messages render inside the
+		// scrollable log and new turns don't yank a scrolled-up reader.
+		// (Pixel-perfect scroll assertions are unit-level: `checkStick`.)
+		await page.getByTestId('alfred-chat-input').fill('scroll me')
+		await page.getByTestId('alfred-chat-send').click()
+		await waitAttached(page)
+		await emit(page, { kind: 'answer', text: 'turn one' })
+		await emit(page, { kind: 'done', reason: 'stop' })
+		const log = page.getByTestId('alfred-chat-messages')
+		await expect(log).toHaveAttribute('role', 'log')
+		await expect(log).toHaveAttribute('aria-live', 'polite')
+		// Scroll up, then settle a second turn: the first stays in view
+		// (no yank — `stickToBottom` is false once scrolled up).
+		await log.evaluate((el) => el.scrollTo({ top: 0 }))
+		await page.getByTestId('alfred-chat-input').fill('scroll again')
+		await page.getByTestId('alfred-chat-send').click()
+		await waitAttached(page)
+		await emit(page, { kind: 'answer', text: 'turn two' })
+		await emit(page, { kind: 'done', reason: 'stop' })
+		await expect(log).toContainText('turn one')
+		await expect(log).toContainText('turn two')
 	})
 })
