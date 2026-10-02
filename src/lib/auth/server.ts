@@ -155,13 +155,13 @@ export function readAuthEnv(raw: Record<string, string | undefined>): AuthEnv {
 	return {
 		secret: raw.AUTH_SECRET ?? '',
 		baseUrl:
+			withScheme(raw.VERCEL_URL) ??
+			withScheme(raw.VERCEL_PROJECT_PRODUCTION_URL) ??
 			cleanUrl(raw.PUBLIC_BASE_URL) ??
 			cleanUrl(raw.BETTER_AUTH_URL) ??
 			cleanUrl(raw.BASE_URL) ??
 			cleanUrl(raw.ORIGIN) ??
 			cleanUrl(raw.AUTH_URL) ??
-			withScheme(raw.VERCEL_PROJECT_PRODUCTION_URL) ??
-			withScheme(raw.VERCEL_URL) ??
 			undefined,
 		enabledProviders: raw.AUTH_ENABLED_PROVIDERS,
 		trustedOrigins: splitList(raw.AUTH_TRUSTED_ORIGINS).length
