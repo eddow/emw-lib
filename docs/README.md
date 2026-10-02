@@ -10,6 +10,7 @@ no SvelteKit `$lib/server`, no env reads — the host app passes config in.
 |---|---|
 | `src/lib/alfred/` | Alfred client: transport + streaming + chat (see `docs/alfred.md`) |
 | `src/lib/auth/` | Auth: client-safe roles/prefs (`./auth`), server better-auth wiring (`./auth-server`), `LoginScreen` (see `docs/auth.md`) |
+| `src/lib/sentry/` | Sentry: client-safe options/scrub/env (`./sentry`), server init/handle/vite glue (`./sentry-server`, plain-JS `engine.js` + `pure.js` for raw-Node `vite.config.ts`; see `docs/sentry.md`) |
 | `src/lib/db/` | DB: forward-only Neon migration runner + `vite build` plugin + manual CLI (server-only `./db-server`; hosts keep only `migrations/*.sql`) |
 | `docs/new-project.md` | New-app scaffold checklist: emw-lib link trio, migrations on build, auth wiring, verify (agent entry point) |
 

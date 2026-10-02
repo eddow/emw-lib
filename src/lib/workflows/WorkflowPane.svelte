@@ -27,12 +27,15 @@
 		interactions = [],
 		output = null,
 		inputLabels = {},
+		optionLabels = {},
 		defLabels = {},
 		outputLabels = {},
 		submitLabel = 'Start workflow',
 		cancelLabel = 'Cancel',
 		toolIcons = {},
 		streamLabels = {},
+		formLabels = {},
+		paneLabels = {},
 		onstart = null,
 		oncancel = null,
 		askHuman = null,
@@ -44,6 +47,8 @@
 		interactions?: WorkflowInteractionLite[]
 		output?: unknown
 		inputLabels?: Record<string, string>
+		/** Translated select option display text (value stays the raw code). */
+		optionLabels?: Record<string, string>
 		defLabels?: Record<string, string>
 		outputLabels?: Record<string, string>
 		submitLabel?: string
@@ -56,6 +61,19 @@
 			error: string
 			cancelled: string
 			stale: string
+		}>
+		/** Translated `WorkflowInputForm` strings (forwarded). */
+		formLabels?: Partial<{
+			starting: string
+			urlsPlaceholder: string
+			required: (label: string) => string
+		}>
+		/** Translated pane strings (cancel + terminal empty states). */
+		paneLabels?: Partial<{
+			cancelling: string
+			doneEmpty: string
+			cancelledEmpty: string
+			errorEmpty: string
 		}>
 		onstart?: ((input: Record<string, unknown>) => Promise<void> | void) | null
 		oncancel?: (() => Promise<void> | void) | null
@@ -84,7 +102,14 @@
 
 <div class="workflow-pane" data-testid="workflow-pane" data-phase={phase}>
 	{#if phase === 'starting'}
-		<WorkflowInputForm {fields} {inputLabels} {submitLabel} onsubmit={onstart} />
+		<WorkflowInputForm
+			{fields}
+			{inputLabels}
+			{optionLabels}
+			{submitLabel}
+			labels={formLabels}
+			onsubmit={onstart}
+		/>
 	{:else}
 		<WorkflowStream {events} {interactions} {toolIcons} labels={streamLabels}>
 			{#if phase === 'running' && askHuman}
@@ -101,7 +126,7 @@
 					disabled={cancelling}
 					onclick={() => void cancel()}
 				>
-					{cancelling ? 'Cancelling…' : cancelLabel}
+					{cancelling ? (paneLabels.cancelling ?? 'Cancelling…') : cancelLabel}
 				</button>
 				{#if cancelError}
 					<p role="alert" data-testid="workflow-cancel-error">{cancelError}</p>
@@ -111,7 +136,11 @@
 		{#if phase === 'done' || phase === 'error' || phase === 'cancelled'}
 			{#if output === null || output === undefined}
 				<p data-testid="workflow-output-empty" class="workflow-output-empty">
-					{phase === 'done' ? 'Done — no output.' : phase === 'cancelled' ? 'Cancelled.' : 'Error.'}
+					{phase === 'done'
+						? (paneLabels.doneEmpty ?? 'Done — no output.')
+						: phase === 'cancelled'
+							? (paneLabels.cancelledEmpty ?? 'Cancelled.')
+							: (paneLabels.errorEmpty ?? 'Error.')}
 				</p>
 			{:else}
 				<WorkflowOutput {output} {defLabels} {outputLabels} />

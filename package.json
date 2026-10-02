@@ -25,6 +25,14 @@
 			"types": "./src/lib/db/server.ts",
 			"default": "./src/lib/db/engine.js"
 		},
+		"./sentry": {
+			"types": "./src/lib/sentry/index.ts",
+			"default": "./src/lib/sentry/index.ts"
+		},
+		"./sentry-server": {
+			"types": "./src/lib/sentry/server.ts",
+			"default": "./src/lib/sentry/engine.js"
+		},
 		"./workflows-server": {
 			"types": "./src/lib/workflows/server.ts",
 			"default": "./src/lib/workflows/server.ts"
@@ -66,6 +74,7 @@
 	},
 	"dependencies": {
 		"@neondatabase/serverless": "^1.1.0",
+		"@sentry/sveltekit": "^11.1.0",
 		"better-auth": "^1.7.6"
 	}
 }

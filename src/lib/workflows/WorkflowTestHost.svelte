@@ -18,12 +18,15 @@
 		oncancel = null,
 		onstart = null,
 		inputLabels = {},
+		optionLabels = {},
 		defLabels = {},
 		outputLabels = {},
 		submitLabel = 'Start workflow',
 		cancelLabel = 'Cancel',
 		toolIcons = {},
 		streamLabels = {},
+		formLabels = {},
+		paneLabels = {},
 		showAskHuman = false,
 		showFollowUp = false,
 		customForm = false,
@@ -39,6 +42,7 @@
 		oncancel?: (() => Promise<void> | void) | null
 		onstart?: ((input: Record<string, unknown>) => Promise<void> | void) | null
 		inputLabels?: Record<string, string>
+		optionLabels?: Record<string, string>
 		defLabels?: Record<string, string>
 		outputLabels?: Record<string, string>
 		submitLabel?: string
@@ -51,6 +55,17 @@
 			error: string
 			cancelled: string
 			stale: string
+		}>
+		formLabels?: Partial<{
+			starting: string
+			urlsPlaceholder: string
+			required: (label: string) => string
+		}>
+		paneLabels?: Partial<{
+			cancelling: string
+			doneEmpty: string
+			cancelledEmpty: string
+			errorEmpty: string
 		}>
 		showAskHuman?: boolean
 		showFollowUp?: boolean
@@ -79,13 +94,27 @@
 
 {#if only === 'form'}
 	{#if customForm}
-		<WorkflowInputForm {fields} {inputLabels} {submitLabel} {onsubmit}>
+		<WorkflowInputForm
+			{fields}
+			{inputLabels}
+			{optionLabels}
+			{submitLabel}
+			labels={formLabels}
+			{onsubmit}
+		>
 			{#snippet children()}
 				{@render customFormSnippet()}
 			{/snippet}
 		</WorkflowInputForm>
 	{:else}
-		<WorkflowInputForm {fields} {inputLabels} {submitLabel} {onsubmit} />
+		<WorkflowInputForm
+			{fields}
+			{inputLabels}
+			{optionLabels}
+			{submitLabel}
+			labels={formLabels}
+			{onsubmit}
+		/>
 	{/if}
 {:else if only === 'output'}
 	{#if customOutput}
@@ -105,12 +134,15 @@
 		{output}
 		{phase}
 		{inputLabels}
+		{optionLabels}
 		{defLabels}
 		{outputLabels}
 		{submitLabel}
 		{cancelLabel}
 		{toolIcons}
 		{streamLabels}
+		{formLabels}
+		{paneLabels}
 		{onstart}
 		{oncancel}
 		askHuman={showAskHuman ? askHumanSnippet : null}

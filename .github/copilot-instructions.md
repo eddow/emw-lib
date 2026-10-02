@@ -1,0 +1,5 @@
+- We have a local `tmp/` folder is git-ignored and should be used as temporary scripts, generated data, ... instead of `/tmp/`
+- `git` can be used but read-only - no stash, commit, checkout, add, ... - indeed, most of the time, **leave `git` alone!**
+- Always prefer generic edit tools to command-line hacks, tmp files and python scripts
+- Prefer in-line editing rather than creating a new file then cp/mv on the actual target
+- Sveltekit allows to use http `accept` headers to differentiate APIs calls to content (html) query - so there is no need for a `/api/` route

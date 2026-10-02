@@ -92,6 +92,28 @@ describe('readAuthEnv', () => {
 	it('leaves trustedOrigins undefined when unset', () => {
 		expect(readAuthEnv({}).trustedOrigins).toBeUndefined()
 	})
+	it('leaves baseUrl undefined when nothing explicit is set (per-request origin)', () => {
+		expect(readAuthEnv({}).baseUrl).toBeUndefined()
+		expect(readAuthEnv({ PUBLIC_BASE_URL: '  ' }).baseUrl).toBeUndefined()
+	})
+	it('accepts mixed private fallbacks and Vercel hosts', () => {
+		expect(readAuthEnv({ BETTER_AUTH_URL: 'https://auth.example/' }).baseUrl).toBe(
+			'https://auth.example'
+		)
+		expect(readAuthEnv({ ORIGIN: 'https://o.example' }).baseUrl).toBe('https://o.example')
+		expect(readAuthEnv({ VERCEL_PROJECT_PRODUCTION_URL: 'app.example' }).baseUrl).toBe(
+			'https://app.example'
+		)
+		expect(readAuthEnv({ VERCEL_URL: 'prev-123.vercel.app' }).baseUrl).toBe(
+			'https://prev-123.vercel.app'
+		)
+		expect(
+			readAuthEnv({
+				PUBLIC_BASE_URL: 'https://canonical.example',
+				VERCEL_URL: 'prev-123.vercel.app',
+			}).baseUrl
+		).toBe('https://canonical.example')
+	})
 	it('trims values and picks up tenant/issuer extras', () => {
 		const env = readAuthEnv({
 			AUTH_MICROSOFT_ID: ' mid ',

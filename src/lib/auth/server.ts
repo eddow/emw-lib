@@ -24,8 +24,14 @@ export interface OAuthCred {
 export interface AuthEnv {
 	/** Session-cookie signing secret (`AUTH_SECRET`). Empty = throw. */
 	secret: string
-	/** Public base URL (`PUBLIC_BASE_URL`). */
-	baseUrl: string
+	/**
+	 * Public base URL (`PUBLIC_BASE_URL`). `undefined` = unset: `createAuth`
+	 * omits `baseURL` and better-auth derives it per-request from
+	 * `request.url` origin — correct on prod, preview and custom domains
+	 * with zero config. Set it explicitly only to pin one canonical host
+	 * (must match the Google-console `redirect_uri`).
+	 */
+	baseUrl: string | undefined
 	/** `AUTH_ENABLED_PROVIDERS` allowlist — unlisted providers are rejected. */
 	enabledProviders?: string
 	/**
@@ -79,6 +85,34 @@ export function parseRoles(raw: unknown): string[] {
 	return splitList(raw)
 }
 
+/** Non-empty trimmed value, or `undefined` (treats `''`/whitespace as unset). */
+function cleanUrl(raw: string | undefined | null): string | undefined {
+	const t = (raw ?? '').trim().replace(/\/+$/, '')
+	return t ? t : undefined
+}
+
+/** `VERCEL_URL`-style bare host → `https://host` (already-absolute URLs pass through). */
+function withScheme(raw: string | undefined | null): string | undefined {
+	const t = (raw ?? '').trim().replace(/\/+$/, '')
+	if (!t) return undefined
+	if (/^https?:\/\//i.test(t)) return t
+	return `https://${t}`
+}
+
+/**
+ * Resolve the public base URL from a raw env record, or `undefined` when
+ * nothing explicit is set. Priority: explicit `PUBLIC_BASE_URL` →
+ * better-auth-native `BETTER_AUTH_URL` → generic `BASE_URL`/`ORIGIN`/
+ * `AUTH_URL` (private fallbacks, so "mixing env" still works) →
+ * Vercel-provided `VERCEL_PROJECT_PRODUCTION_URL` / `VERCEL_URL` (bare
+ * hosts, `https://` added). `undefined` is the GOOD case: `createAuth`
+ * then omits `baseURL` and better-auth derives the origin per-request
+ * from `request.url` — correct on prod, preview and custom domains with
+ * zero config. Never fall back to a localhost default here: a baked-in
+ * `http://localhost:5173` is exactly what produced
+ * `redirect_uri=http://localhost:5173/auth/callback/google` on prod.
+ */
+
 /** Join roles for the `role` column. Sorted + deduped for stable writes. */
 export function serializeRoles(roles: string[]): string {
 	return [...new Set(roles.map((r) => r.trim()).filter(Boolean))].sort().join(',')
@@ -120,7 +154,15 @@ export function readAuthEnv(raw: Record<string, string | undefined>): AuthEnv {
 	const gitlab = cred('GITLAB')
 	return {
 		secret: raw.AUTH_SECRET ?? '',
-		baseUrl: raw.PUBLIC_BASE_URL ?? 'http://localhost:5173',
+		baseUrl:
+			cleanUrl(raw.PUBLIC_BASE_URL) ??
+			cleanUrl(raw.BETTER_AUTH_URL) ??
+			cleanUrl(raw.BASE_URL) ??
+			cleanUrl(raw.ORIGIN) ??
+			cleanUrl(raw.AUTH_URL) ??
+			withScheme(raw.VERCEL_PROJECT_PRODUCTION_URL) ??
+			withScheme(raw.VERCEL_URL) ??
+			undefined,
 		enabledProviders: raw.AUTH_ENABLED_PROVIDERS,
 		trustedOrigins: splitList(raw.AUTH_TRUSTED_ORIGINS).length
 			? splitList(raw.AUTH_TRUSTED_ORIGINS)
@@ -188,7 +230,12 @@ export function createAuth(env: AuthEnv, db: AuthDb) {
 	const effective = new Set(effectiveAllowlist(env))
 	return betterAuth({
 		secret: env.secret,
-		baseURL: env.baseUrl,
+		// `undefined` = omit: better-auth derives the origin per-request
+		// from `request.url` (correct on every domain, zero config). A
+		// hardcoded localhost default here is what broke prod Google login
+		// (`redirect_uri=http://localhost:5173/...`). Set `baseUrl`
+		// explicitly only to pin one canonical host.
+		...(env.baseUrl ? { baseURL: env.baseUrl } : {}),
 		// Accept-header routing (no `/api/` prefix): the host mounts auth
 		// at `src/routes/auth/[...all]/+server.ts` and the client uses
 		// `basePath: '/auth'` — both sides must agree (see `docs/auth.md`).

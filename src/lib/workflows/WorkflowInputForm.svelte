@@ -17,13 +17,27 @@
 	let {
 		fields = [],
 		inputLabels = {},
+		optionLabels = {},
 		submitLabel = 'Start workflow',
+		labels = {},
 		children = null,
 		onsubmit = null
 	}: {
 		fields?: WorkflowInputField[]
 		inputLabels?: Record<string, string>
+		/** Translated select option display text (value stays the raw code). */
+		optionLabels?: Record<string, string>
 		submitLabel?: string
+		/**
+		 * Translated UI strings. Paraglide lives in the host — pass
+		 * `m.*()` strings here; English defaults apply otherwise.
+		 * `required` receives the field label.
+		 */
+		labels?: Partial<{
+			starting: string
+			urlsPlaceholder: string
+			required: (label: string) => string
+		}>
 		/** App override: replaces the default fields (still inside the `<form>`). */
 		children?: Snippet | null
 		/** Called with the collected `{ [name]: value }` object. */
@@ -68,7 +82,7 @@
 			if (!f.required) continue
 			const v = out[f.name]
 			if (v === '' || v === null || (Array.isArray(v) && v.length === 0)) {
-				error = `${labelFor(f)} is required`
+				error = labels.required?.(labelFor(f)) ?? `${labelFor(f)} is required`
 				return
 			}
 		}
@@ -101,7 +115,9 @@
 					<textarea
 						name={f.name}
 						required={f.required}
-						placeholder={f.type === 'urls' ? 'one per line' : (f.placeholder ?? '')}
+						placeholder={f.type === 'urls'
+							? (labels.urlsPlaceholder ?? 'one per line')
+							: (f.placeholder ?? '')}
 						rows={f.type === 'urls' ? 4 : 3}
 						class="workflow-input-control"
 						>{typeof f.defaultValue === 'string'
@@ -116,7 +132,9 @@
 							<option value="" selected disabled>—</option>
 						{/if}
 						{#each f.options ?? [] as opt (opt)}
-							<option value={opt} selected={f.defaultValue === opt}>{opt}</option>
+							<option value={opt} selected={f.defaultValue === opt}
+								>{optionLabels[opt] ?? opt}</option
+							>
 						{/each}
 					</select>
 				{:else if f.type === 'boolean'}
@@ -157,7 +175,7 @@
 		data-testid="workflow-input-submit"
 		class="workflow-input-submit"
 	>
-		{submitting ? 'Starting…' : submitLabel}
+		{submitting ? (labels.starting ?? 'Starting…') : submitLabel}
 	</button>
 </form>
 
