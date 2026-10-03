@@ -123,6 +123,7 @@ describe('AppMenu', () => {
 	})
 	it('marks the picked locale active in uncontrolled mode (arb2b stuck-locale repro)', async () => {
 		localStorage.clear()
+		document.cookie = 'PARAGLIDE_LOCALE=; path=/; max-age=0'
 		const screen = await render(AppMenuTestHost, { locales: THREE })
 		await screen.getByRole('button', { name: 'User preferences' }).click()
 		const french = screen.getByRole('button', { name: 'Français' })
@@ -133,10 +134,12 @@ describe('AppMenu', () => {
 		await expect
 			.element(screen.getByRole('button', { name: 'Français' }))
 			.toHaveAttribute('aria-pressed', 'true')
-		expect(localStorage.getItem('PARAGLIDE_LOCALE')).toBe('fr')
+		// Locale persists to the cookie only (single client↔server channel).
+		expect(document.cookie).toContain('PARAGLIDE_LOCALE=fr')
 	})
 	it('marks the picked locale active when the host passes a stale controlled currentLocale (arb2b host shape)', async () => {
 		localStorage.clear()
+		document.cookie = 'PARAGLIDE_LOCALE=; path=/; max-age=0'
 		let picked: string | null = null
 		const screen = await render(AppMenuTestHost, {
 			locales: THREE,
@@ -162,6 +165,7 @@ describe('AppMenu', () => {
 		// updating props — the theme row must show the translated titles,
 		// not the English defaults.
 		localStorage.clear()
+		document.cookie = 'PARAGLIDE_LOCALE=; path=/; max-age=0'
 		const english = {
 			theme: 'Theme',
 			lightTheme: 'Light theme',

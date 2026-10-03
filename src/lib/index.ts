@@ -34,11 +34,14 @@ export type {
 	WorkflowInputField,
 	WorkflowInteractionLite,
 	WorkflowOutputEntry,
+	WorkflowRunStatus,
+	WorkflowRunStreamOptions,
 	WorkflowStreamEvent,
 } from './workflows/index.js'
 export {
 	CONTROL_FLOW_TAG,
 	clearAsyncWorkflows,
+	defaultRunReconnectDelay,
 	defineAsyncWorkflow,
 	extractBalanced,
 	extractJsonValue,
@@ -47,13 +50,17 @@ export {
 	groupParallelOpens,
 	InteractionFailed,
 	isControlFlow,
+	isTerminalRunStatus,
 	listAsyncWorkflows,
 	normalizeWorkflowOutput,
 	ParseError,
 	parseJson,
 	payloadHash,
+	RUN_STREAM_POLL_FALLBACK_AFTER,
 	stableStringify,
 	throwControlFlow,
+	toWorkflowStreamEvent,
+	WorkflowRunStream,
 } from './workflows/index.js'
 export { default as WorkflowInputForm } from './workflows/WorkflowInputForm.svelte'
 export { default as WorkflowOutput } from './workflows/WorkflowOutput.svelte'

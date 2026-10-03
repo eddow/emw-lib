@@ -36,6 +36,8 @@
 		streamLabels = {},
 		formLabels = {},
 		paneLabels = {},
+		ticking = false,
+		drafts = {},
 		onstart = null,
 		oncancel = null,
 		askHuman = null,
@@ -61,7 +63,15 @@
 			error: string
 			cancelled: string
 			stale: string
+			working: string
 		}>
+		/** True while a host tick is in flight (forwarded to `WorkflowStream`). */
+		ticking?: boolean
+		/**
+		 * Live LLM drafts per open prompt row idx (S7 prompt live output).
+		 * Forwarded to `WorkflowStream` (one dimmed line under the row).
+		 */
+		drafts?: Record<number, string>
 		/** Translated `WorkflowInputForm` strings (forwarded). */
 		formLabels?: Partial<{
 			starting: string
@@ -111,7 +121,7 @@
 			onsubmit={onstart}
 		/>
 	{:else}
-		<WorkflowStream {events} {interactions} {toolIcons} labels={streamLabels}>
+		<WorkflowStream {events} {interactions} {toolIcons} {ticking} {drafts} labels={streamLabels}>
 			{#if phase === 'running' && askHuman}
 				<div data-testid="workflow-ask-human-pinned">
 					{@render askHuman()}

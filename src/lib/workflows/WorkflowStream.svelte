@@ -14,12 +14,20 @@
 	 * on mobile, no horizontal scroll). `interaction_resolved` flips the
 	 * row to settled; `log` renders dimmed; `version_stale` is a warning
 	 * banner (the run continues); `run_status` drives the header state.
+	 * Liveness (plans/workflow-finalize.md §6 S7) is stream-derived:
+	 * the "working…" line shows while the run is non-terminal and any
+	 * row is open — no tick timer. `ticking` is a deprecated alias
+	 * (OR'd in for one release so poll-era callers keep working).
+	 * `drafts` renders a live LLM draft under an open prompt row
+	 * (one dimmed line per idx, `data-testid="workflow-prompt-draft"`).
 	 */
 	let {
 		events = [],
 		interactions = [],
 		toolIcons = {},
 		labels = {},
+		ticking = false,
+		drafts = {},
 		children = null
 	}: {
 		events?: WorkflowStreamEvent[]
@@ -37,7 +45,15 @@
 			error: string
 			cancelled: string
 			stale: string
+			working: string
 		}>
+		/** Deprecated (S7): stream-derived liveness replaces the tick flag. Still OR'd in. */
+		ticking?: boolean
+		/**
+		 * Live LLM drafts per open prompt row idx (S7 prompt live output).
+		 * Rendered as one dimmed line under the row; absent/empty = no line.
+		 */
+		drafts?: Record<number, string>
 		/** App override slot rendered after the stream (e.g. pinned ask-human). */
 		children?: Snippet | null
 	} = $props()
@@ -47,6 +63,8 @@
 		icon: string
 		text: string
 		status: WorkflowInteractionLite['status']
+		/** Live LLM draft for this row (prompt rows only, else undefined). */
+		draft?: string
 	}
 
 	const byIdx = $derived(new Map(interactions.map((i) => [i.idx, i] as const)))
@@ -79,11 +97,13 @@
 		opened.map((e) => {
 			const lite = byIdx.get(e.idx)
 			const resolved = resolvedByIdx.get(e.idx)
+			const draft = drafts[e.idx]
 			return {
 				idx: e.idx,
 				icon: iconFor(e.kind, e.tool),
 				text: e.label_text,
-				status: (resolved as Row['status'] | undefined) ?? lite?.status ?? 'open'
+				status: (resolved as Row['status'] | undefined) ?? lite?.status ?? 'open',
+				...(typeof draft === 'string' && draft !== '' ? { draft } : {})
 			}
 		})
 	)
@@ -129,12 +149,32 @@
 						? (labels.cancelled ?? 'Cancelled')
 						: (labels.error ?? 'Error')
 	)
+
+	/**
+	 * Stream-derived liveness (S7): "working…" while the run is
+	 * non-terminal and any row is open. `ticking` is the deprecated
+	 * poll-era alias — OR'd in so old callers keep working for one release.
+	 */
+	const working = $derived(
+		(status === 'running' || status === 'waiting') &&
+			(ticking || rows.some((r) => r.status === 'open'))
+	)
 </script>
 
-<div class="workflow-stream" data-testid="workflow-stream" data-status={status}>
+<div
+	class="workflow-stream"
+	data-testid="workflow-stream"
+	data-status={status}
+	data-ticking={working}
+>
 	<p class="workflow-stream-status" data-testid="workflow-stream-status" role="status">
 		{statusText}
 	</p>
+	{#if working}
+		<p class="workflow-stream-working" data-testid="workflow-working" role="status">
+			{labels.working ?? 'working…'}
+		</p>
+	{/if}
 	{#if stale.length > 0}
 		<p class="workflow-stream-stale" data-testid="workflow-stream-stale" role="alert">
 			{labels.stale ?? 'This run continues on a stale deployment.'}
@@ -159,6 +199,11 @@
 						<span aria-hidden="true">{row.icon}</span>
 						<span data-testid="workflow-stream-text">{row.text}</span>
 					</div>
+					{#if row.draft !== undefined}
+						<p class="workflow-stream-draft" data-testid="workflow-prompt-draft" data-idx={row.idx}>
+							{row.draft}
+						</p>
+					{/if}
 				{/each}
 			</div>
 		{/each}
@@ -185,6 +230,19 @@
 		font-size: 0.8125rem;
 		opacity: 0.75;
 		margin: 0;
+	}
+	.workflow-stream-working {
+		font-size: 0.8125rem;
+		opacity: 0.75;
+		margin: 0;
+		font-style: italic;
+	}
+	.workflow-stream-draft {
+		font-size: 0.8125rem;
+		opacity: 0.6;
+		margin: 0;
+		font-style: italic;
+		overflow-wrap: anywhere;
 	}
 	.workflow-stream-stale {
 		font-size: 0.8125rem;

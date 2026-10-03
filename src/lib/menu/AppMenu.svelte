@@ -33,7 +33,8 @@
  * (cookie / auth user row) so first paint already marks the active locale
  * and theme. Inline `firstPaintThemeScript()` in `app.html` so `.dark` is
  * set before hydration; `MenuPreferences.init()` then reconciles
- * (explicit > stored > browser/system) — a no-op for returning visitors.
+ * (explicit > stored (locale: cookie, theme: localStorage) > browser/system)
+ * — a no-op for returning visitors.
  -->
 
 <script lang="ts">

@@ -119,6 +119,55 @@ export interface StreamCredential {
 	stream_url: string
 }
 
+/**
+ * What the FE needs to open a workflow run stream (from the host's
+ * start/play response, `plans/workflow-finalize.md` §6 S4). Same shape as
+ * {@link StreamCredential} but keyed on the run id — the token's subject
+ * is the run, verified against `ALFRED_STREAM_SECRET`.
+ */
+export interface WorkflowRunStreamCredential {
+	run_id: string
+	stream_token: string
+	stream_url: string
+}
+
+/** `POST /wfruns` response: the run + its first stream capability (BE-only). */
+export interface RegisterWorkflowRunResult {
+	run_id: string
+	stream_token: string
+	expires_at: number
+	stream_url: string
+}
+
+/** `POST /wfruns/{rid}/play` response: a fresh run capability (BE-only). */
+export interface PlayWorkflowRunResult {
+	stream_token: string
+	expires_at: number
+	stream_url: string
+}
+
+/** One run-local event to publish (`POST /wfruns/{rid}/events`, BE-only). */
+export interface WorkflowRunEventInput {
+	type: string
+	payload: Record<string, unknown>
+}
+
+/** A persisted run-local event (SSE replay, `poll`). `seq` is run-local. */
+export interface WorkflowRunEvent {
+	seq: number
+	type: string
+	payload: Record<string, unknown>
+	ts?: string
+	id?: number
+}
+
+/** `GET /wfstreams/{rid}/poll` response (same shape as {@link PollResponse}). */
+export interface WorkflowRunPollResponse {
+	events: WorkflowRunEvent[]
+	next_seq: number
+	timeout: boolean
+}
+
 /** `GET /sessions/{id}` — full detail (agent + toolset + status). */
 export interface SessionInfo {
 	id: string

@@ -3,8 +3,10 @@
  *
  * The client splits into
  * **BE methods** (secret: createSession, prompt, play, stop/resume/queue/
- * steer/interrupt, getSession/listSessions/deleteSession, history, backup)
- * and **stream methods** (token: streamEvents, streamPoll). Session-scoped
+ * steer/interrupt, getSession/listSessions/deleteSession, history, backup,
+ * wfrun register/play/publish)
+ * and **stream methods** (token: streamEvents, streamPoll, run streamEvents,
+ * run streamPoll). Session-scoped
  * authToken / setCredential / mintToken / events(sid) / poll(sid) /
  * toolCallback / expireCallbacks are deleted.
  *
@@ -25,15 +27,21 @@ import type {
 	HumanPending,
 	LiveEvent,
 	PlayResult,
+	PlayWorkflowRunResult,
 	PollResponse,
 	PromptInput,
 	PromptResult,
+	RegisterWorkflowRunResult,
 	SessionInfo,
 	SessionSummary,
 	StreamCredential,
 	ToolCallInput,
 	ToolCallResult,
 	ToolDef,
+	WorkflowRunEvent,
+	WorkflowRunEventInput,
+	WorkflowRunPollResponse,
+	WorkflowRunStreamCredential,
 } from './types.js'
 
 /**
@@ -109,6 +117,11 @@ function invalid(message: string): never {
 /** `sid` must be a non-empty string. */
 function assertSid(sid: string): void {
 	if (typeof sid !== 'string' || sid.trim() === '') invalid('sid must be a non-empty string')
+}
+
+/** `rid` must be a non-empty string. */
+function assertRid(rid: string): void {
+	if (typeof rid !== 'string' || rid.trim() === '') invalid('rid must be a non-empty string')
 }
 
 /** `gid` must be a non-empty string. */
@@ -281,6 +294,23 @@ export class AlfredClient {
 		if (baseUrl) {
 			// stream_url is `{PUBLIC}/streams/{gid}` — strip the suffix for the base.
 			const base = baseUrl.replace(/\/streams\/[^/]*\/?$/, '')
+			if (base) this.baseUrl = base.replace(/\/+$/, '')
+		}
+	}
+
+	/**
+	 * Install a run-stream credential as served by the host's start/play
+	 * response (`{ run_id, stream_token, stream_url }`, §6 S4): swaps the
+	 * stream token AND the base URL in one step. `stream_url` is
+	 * `{PUBLIC}/wfstreams/{rid}` — strip that suffix for the base.
+	 */
+	setRunStreamCredential(credential: WorkflowRunStreamCredential): void {
+		if (!credential?.stream_token) invalid('credential.stream_token is required')
+		if (!credential?.run_id) invalid('credential.run_id is required')
+		this.streamToken = credential.stream_token
+		const baseUrl = credential.stream_url?.trim()
+		if (baseUrl) {
+			const base = baseUrl.replace(/\/wfstreams\/[^/]*\/?$/, '')
 			if (base) this.baseUrl = base.replace(/\/+$/, '')
 		}
 	}
@@ -653,6 +683,106 @@ export class AlfredClient {
 		signal?: AbortSignal
 	): Promise<{ ok: true; duplicate: boolean; status: string; value: unknown }> {
 		return this.answerHuman(gid, toolCallId, { answers }, signal)
+	}
+
+	// -- workflow runs (BE, secret) ----------------------------------------------
+
+	/**
+	 * `POST /wfruns {run_id}` → `{ run_id, stream_token, expires_at, stream_url }`.
+	 * Register a workflow run stream (idempotent upsert). BE-only.
+	 */
+	async registerWorkflowRun(
+		runId: string,
+		signal?: AbortSignal
+	): Promise<RegisterWorkflowRunResult> {
+		assertRid(runId)
+		return this.beJson('POST', '/wfruns', { run_id: runId }, signal, 201)
+	}
+
+	/**
+	 * `POST /wfruns/{rid}/play` → `{ stream_token, expires_at, stream_url }`.
+	 * Re-mint a run-stream capability (reload path). BE-only. 404 on unknown run.
+	 */
+	async playWorkflowRun(rid: string, signal?: AbortSignal): Promise<PlayWorkflowRunResult> {
+		assertRid(rid)
+		return this.beJson('POST', `/wfruns/${encodeURIComponent(rid)}/play`, undefined, signal)
+	}
+
+	/**
+	 * `POST /wfruns/{rid}/events {events: [{type, payload}]}` → `{ run_id, events }`.
+	 * Publish a batch of run-local events (best-effort from the host — a
+	 * publish failure never fails the tick). BE-only. 404 on unknown run,
+	 * 422 on empty batch / unknown type / non-object payload.
+	 */
+	async publishWorkflowEvents(
+		rid: string,
+		events: WorkflowRunEventInput[],
+		signal?: AbortSignal
+	): Promise<{ run_id: string; events: WorkflowRunEvent[] }> {
+		assertRid(rid)
+		if (!Array.isArray(events) || events.length === 0) invalid('events must be a non-empty array')
+		return this.beJson('POST', `/wfruns/${encodeURIComponent(rid)}/events`, { events }, signal, 201)
+	}
+
+	// -- workflow run streams (FE, token) ------------------------------------------
+
+	/**
+	 * `GET /wfstreams/{rid}` (SSE). Replays run-local durable events since
+	 * `after_seq`, then yields live events until `signal` aborts or a
+	 * terminal `run_status` closes the stream. Same fetch-reader shape as
+	 * {@link streamEvents}; auth is the run-scoped stream token.
+	 */
+	async *streamWorkflowEvents(
+		rid: string,
+		afterSeq = 0,
+		signal?: AbortSignal
+	): AsyncGenerator<WorkflowRunEvent, void, void> {
+		assertRid(rid)
+		assertAfterSeq(afterSeq)
+		const params = new URLSearchParams({ after_seq: String(afterSeq) })
+		const url = `${this.baseUrl}/wfstreams/${encodeURIComponent(rid)}?${params}`
+		const headers: Record<string, string> = { accept: 'text/event-stream' }
+		if (this.streamToken) headers['authorization'] = `Bearer ${this.streamToken}`
+		const res = await this.send(url, { method: 'GET', headers }, signal, null)
+		if (!res.ok) throw await this.httpError(res)
+		if (!res.body) throw new AlfredError('SSE response has no body', { code: 'parse' })
+		for await (const frame of parseSse(res.body)) yield frame as WorkflowRunEvent
+	}
+
+	/**
+	 * `GET /wfstreams/{rid}/poll` → run-local replay + live event, or
+	 * `{ timeout: true }`. Same credential rule as the run SSE. Fallback
+	 * ALTERNATIVE to SSE, not a second step.
+	 */
+	async pollWorkflowEvents(
+		rid: string,
+		afterSeq = 0,
+		timeoutS?: number,
+		signal?: AbortSignal
+	): Promise<WorkflowRunPollResponse> {
+		assertRid(rid)
+		assertAfterSeq(afterSeq)
+		const clamped = clampTimeout(timeoutS)
+		const params = new URLSearchParams({
+			after_seq: String(afterSeq),
+			timeout_s: String(clamped),
+		})
+		const timeoutMs =
+			signal === undefined ? Math.max(this.defaultTimeoutMs, (clamped + 5) * 1000) : undefined
+		const headers: Record<string, string> = {}
+		if (this.streamToken) headers['authorization'] = `Bearer ${this.streamToken}`
+		const res = await this.send(
+			`${this.baseUrl}/wfstreams/${encodeURIComponent(rid)}/poll?${params}`,
+			{ method: 'GET', headers },
+			signal,
+			timeoutMs
+		)
+		if (!res.ok) throw await this.httpError(res)
+		try {
+			return (await res.json()) as WorkflowRunPollResponse
+		} catch (err) {
+			throw new AlfredError(`invalid JSON response: ${(err as Error).message}`, { code: 'parse' })
+		}
 	}
 
 	// -- internals --------------------------------------------------------

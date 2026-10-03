@@ -651,6 +651,127 @@ describe('stream auth', () => {
 	})
 })
 
+describe('workflow runs (BE) + run streams (FE)', () => {
+	/** Read a header off a recorded call, case-insensitively. */
+	function header(init: RequestInit | undefined, name: string): string | null {
+		return new Headers(init?.headers).get(name)
+	}
+
+	it('registerWorkflowRun POSTs { run_id } and returns the run credential', async () => {
+		expect.assertions(4)
+		const { fn, calls } = mockFetch(() =>
+			jsonResponse(
+				{
+					run_id: 'run-1',
+					stream_token: 'tok-run',
+					expires_at: 1,
+					stream_url: 'http://localhost:8192/wfstreams/run-1',
+				},
+				201
+			)
+		)
+		const client = new AlfredClient({ fetchFn: fn, webhookSecret: 's3cret' })
+		const out = await client.registerWorkflowRun('run-1')
+		expect(out.run_id).toBe('run-1')
+		expect(out.stream_token).toBe('tok-run')
+		expect(calls[0].url).toBe('http://localhost:8192/wfruns')
+		expect(header(calls[0].init, 'x-alfred-secret')).toBe('s3cret')
+	})
+
+	it('playWorkflowRun re-mints for a run', async () => {
+		expect.assertions(2)
+		const { fn, calls } = mockFetch(() =>
+			jsonResponse({ stream_token: 'tok-2', expires_at: 1, stream_url: 'http://x/wfstreams/r' })
+		)
+		const client = new AlfredClient({ fetchFn: fn })
+		const out = await client.playWorkflowRun('run-1')
+		expect(out.stream_token).toBe('tok-2')
+		expect(calls[0].url).toBe('http://localhost:8192/wfruns/run-1/play')
+	})
+
+	it('publishWorkflowEvents POSTs the batch and returns stored events', async () => {
+		expect.assertions(3)
+		const { fn, calls } = mockFetch(() =>
+			jsonResponse(
+				{
+					run_id: 'run-1',
+					events: [{ seq: 1, type: 'run_status', payload: { status: 'running' } }],
+				},
+				201
+			)
+		)
+		const client = new AlfredClient({ fetchFn: fn, webhookSecret: 's3cret' })
+		const out = await client.publishWorkflowEvents('run-1', [
+			{ type: 'run_status', payload: { status: 'running' } },
+		])
+		expect(out.events).toHaveLength(1)
+		expect(calls[0].url).toBe('http://localhost:8192/wfruns/run-1/events')
+		expect(header(calls[0].init, 'x-alfred-secret')).toBe('s3cret')
+	})
+
+	it('publishWorkflowEvents validates before any fetch', async () => {
+		expect.assertions(3)
+		const { fn, calls } = mockFetch(() => jsonResponse({}))
+		const client = new AlfredClient({ fetchFn: fn })
+		await expect(client.publishWorkflowEvents('', [])).rejects.toMatchObject({
+			code: 'validation',
+		})
+		await expect(client.publishWorkflowEvents('run-1', [])).rejects.toMatchObject({
+			code: 'validation',
+		})
+		expect(calls).toHaveLength(0)
+	})
+
+	it('pollWorkflowEvents encodes after_seq + timeout_s on the run path', async () => {
+		expect.assertions(3)
+		const { fn, calls } = mockFetch(() =>
+			jsonResponse({
+				events: [{ seq: 1, type: 'run_status', payload: { status: 'running' } }],
+				next_seq: 2,
+				timeout: false,
+			})
+		)
+		const client = new AlfredClient({ fetchFn: fn, streamToken: 'tok-run' })
+		const out = await client.pollWorkflowEvents('run-1', 0, 5)
+		expect(out.next_seq).toBe(2)
+		expect(calls[0].url).toBe('http://localhost:8192/wfstreams/run-1/poll?after_seq=0&timeout_s=5')
+		expect(header(calls[0].init, 'authorization')).toBe('Bearer tok-run')
+	})
+
+	it('streamWorkflowEvents yields run events with the bearer token', async () => {
+		expect.assertions(3)
+		const { fn, calls } = mockFetch(
+			() =>
+				new Response(
+					sseBody([
+						'event: run_status\ndata: {"seq":1,"type":"run_status","payload":{"status":"running"}}\n\n',
+					]),
+					{ status: 200, headers: { 'content-type': 'text/event-stream' } }
+				)
+		)
+		const client = new AlfredClient({ fetchFn: fn, streamToken: 'tok-run' })
+		const seen: unknown[] = []
+		for await (const evt of client.streamWorkflowEvents('run-1', 0)) seen.push(evt)
+		expect(seen).toHaveLength(1)
+		expect(calls[0].url).toBe('http://localhost:8192/wfstreams/run-1?after_seq=0')
+		expect(header(calls[0].init, 'authorization')).toBe('Bearer tok-run')
+	})
+
+	it('setRunStreamCredential swaps token and base URL together', async () => {
+		expect.assertions(2)
+		const { fn, calls } = mockFetch(() => jsonResponse({ ok: true }))
+		const client = new AlfredClient({ fetchFn: fn, baseUrl: 'http://old:8192' })
+		client.setRunStreamCredential({
+			run_id: 'run-1',
+			stream_token: 'tok-1',
+			stream_url: 'https://alfred.example:8192/wfstreams/run-1',
+		})
+		for await (const _ of client.streamWorkflowEvents('run-1')) break
+		expect(calls[0].url).toBe('https://alfred.example:8192/wfstreams/run-1?after_seq=0')
+		expect(header(calls[0].init, 'authorization')).toBe('Bearer tok-1')
+	})
+})
+
 describe('validation (throws before fetch)', () => {
 	it('rejects empty sid/gid, empty prompt and negative after_seq', async () => {
 		const { fn, calls } = mockFetch(() => jsonResponse({}))

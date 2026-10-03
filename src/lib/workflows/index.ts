@@ -26,6 +26,18 @@ export { groupParallelOpens, normalizeWorkflowOutput } from './display.js'
 export { fnSourceHash, payloadHash, stableStringify } from './memo.js'
 export { extractBalanced, extractJsonValue, parseJson } from './parseJson.js'
 export type {
+	WorkflowRunStatus,
+	WorkflowRunStreamOptions,
+} from './run-stream.svelte.js'
+export {
+	DEFAULT_RUN_EVENT_LOG_LIMIT,
+	defaultRunReconnectDelay,
+	isTerminalRunStatus,
+	RUN_STREAM_POLL_FALLBACK_AFTER,
+	toWorkflowStreamEvent,
+	WorkflowRunStream,
+} from './run-stream.svelte.js'
+export type {
 	BasePromptOpts,
 	ControlFlowSentinel,
 	DescribeStepArgs,

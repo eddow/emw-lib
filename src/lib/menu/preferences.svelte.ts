@@ -5,14 +5,23 @@
  * Port of `emw`'s `src/lib/preferences.svelte.ts` minus the emw-only deps:
  * no `$app/*`, no `$lib/locale`, no paraglide runtime. The host owns
  * navigation and message dictionaries — this module only persists the
- * choice (localStorage + cookie) and applies the theme to the DOM.
+ * choice (locale → cookie, theme → localStorage) and applies the theme
+ * to the DOM.
+ *
+ * Storage split (deliberate, single copy each): the locale lives in the
+ * `PARAGLIDE_LOCALE` cookie ONLY — the cookie is the single client↔server
+ * channel (SSR reads it, the browser writes it via `document.cookie`).
+ * It is never mirrored into localStorage: a second copy there once
+ * diverged from the cookie (SSR painted from the cookie, the client from
+ * localStorage) and caused first-paint blinks. Theme is the mirror
+ * image: localStorage only, never a cookie (server never needs it).
  *
  * SSR contract (no-blink): the host renders the first paint from its own
  * SSR-known values (`initialLocale`/`initialTheme`, e.g. from the auth user
  * row via `populateLocals`, or the `PARAGLIDE_LOCALE` cookie), and inlines
  * {@link FIRST_PAINT_THEME_SCRIPT} in `app.html` so `.dark` is set before
  * hydration. `MenuPreferences` then reconciles client-side on `init()`:
- * explicit in-memory choice > stored (localStorage, then cookie) >
+ * explicit in-memory choice > stored (locale: cookie, theme: localStorage) >
  * browser/system default. Because the script and the store share the same
  * storage key, the common case (returning visitor with a stored choice)
  * paints correctly and `init()` is a no-op for the theme.
@@ -25,7 +34,7 @@ export type { Theme }
 /** localStorage key for the explicit theme choice (theme never touches cookies). */
 export const MENU_THEME_KEY = 'EMW_THEME'
 
-/** localStorage + cookie key for the explicit locale choice. */
+/** Cookie key for the explicit locale choice (cookie only — never localStorage). */
 export const MENU_LOCALE_KEY = 'PARAGLIDE_LOCALE'
 
 /** Cookie max-age for the locale choice (1 year, mirrors paraglide default). */
@@ -48,7 +57,7 @@ export interface MenuPreferencesOptions {
 	locales?: readonly string[]
 	/** localStorage key for the theme. Default {@link MENU_THEME_KEY}. */
 	themeKey?: string
-	/** localStorage + cookie key for the locale. Default {@link MENU_LOCALE_KEY}. */
+	/** Cookie key for the locale. Default {@link MENU_LOCALE_KEY}. */
 	localeKey?: string
 	/** Cookie max-age for the locale. Default {@link MENU_LOCALE_COOKIE_MAX_AGE}. */
 	localeCookieMaxAge?: number
@@ -112,22 +121,11 @@ function writeStoredTheme(themeKey: string, theme: Theme): void {
 
 function readStoredLocale(localeKey: string): string | undefined {
 	if (!isBrowser()) return undefined
-	try {
-		const fromStorage = toLocale(localStorage.getItem(localeKey))
-		if (fromStorage) return fromStorage
-	} catch {
-		// storage unavailable — fall through to cookie
-	}
 	return toLocale(readCookie(localeKey))
 }
 
 function writeStoredLocale(localeKey: string, maxAge: number, locale: string): void {
 	if (!isBrowser()) return
-	try {
-		localStorage.setItem(localeKey, locale)
-	} catch {
-		// storage unavailable — cookie still persists the choice
-	}
 	writeCookie(localeKey, locale, maxAge)
 }
 
@@ -219,7 +217,7 @@ export class MenuPreferences {
 
 	/**
 	 * Reconcile client-side once. Priority: explicit in-memory choice
-	 * (constructor hints) > stored (localStorage, then cookie) >
+	 * (constructor hints) > stored cookie >
 	 * browser/system default. Idempotent.
 	 */
 	init(): void {
@@ -228,6 +226,16 @@ export class MenuPreferences {
 
 		this.#systemDark = detectSystemTheme() === 'dark'
 		this.#userTheme = readStoredTheme(this.themeKey)
+
+		// Legacy cleanup: locale used to mirror into localStorage under
+		// the same key — cookie-only now, so drop the stale copy once
+		// (it is never read anymore and only caused cookie/localStorage
+		// divergence).
+		try {
+			localStorage.removeItem(this.localeKey)
+		} catch {
+			// storage unavailable
+		}
 
 		const fallback = this.locales[0] ?? 'en'
 		this.#currentLocale =
@@ -257,9 +265,10 @@ export class MenuPreferences {
 	}
 
 	/**
-	 * Persist an explicit locale choice. Never navigates — the host's
-	 * `onLocaleChange` decides (translated slug, locale path, in-place
-	 * re-render, …).
+	 * Persist an explicit locale choice to the cookie (the single
+	 * client↔server channel — SSR reads it on next load). Never navigates —
+	 * the host's `onLocaleChange` decides (translated slug, locale path,
+	 * in-place re-render, …).
 	 */
 	setLocale(locale: string): void {
 		if (!this.locales.includes(locale)) return

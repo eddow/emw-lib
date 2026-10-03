@@ -75,6 +75,15 @@ lib (its DB *is* the domain).
   `parseRoles`/`serializeRoles` are the single place that split/join it.
 - Preference layer: cookie > DB row (`user.locale`/`user.theme`) >
   browser default — `resolvePreference(explicit, stored, fallback)`.
+  Storage split (single copy each): the locale lives in the
+  `PARAGLIDE_LOCALE` cookie ONLY — the cookie is the single
+  client↔server channel (SSR reads it, the browser writes it via
+  `document.cookie` on every pick, e.g. `MenuPreferences.setLocale()`).
+  It is never mirrored into localStorage (a second copy there once
+  diverged from the cookie and caused first-paint blinks). Theme is the
+  mirror image: localStorage only, never a cookie (the server never
+  needs it — first paint comes from the inlined
+  `firstPaintThemeScript()`).
 
 ## Checks (from `emw-lib/`)
 

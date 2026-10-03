@@ -25,6 +25,8 @@
 		cancelLabel = 'Cancel',
 		toolIcons = {},
 		streamLabels = {},
+		ticking = false,
+		drafts = {},
 		formLabels = {},
 		paneLabels = {},
 		showAskHuman = false,
@@ -55,7 +57,10 @@
 			error: string
 			cancelled: string
 			stale: string
+			working: string
 		}>
+		ticking?: boolean
+		drafts?: Record<number, string>
 		formLabels?: Partial<{
 			starting: string
 			urlsPlaceholder: string
@@ -141,6 +146,8 @@
 		{cancelLabel}
 		{toolIcons}
 		{streamLabels}
+		{ticking}
+		{drafts}
 		{formLabels}
 		{paneLabels}
 		{onstart}
@@ -149,5 +156,5 @@
 		followUp={showFollowUp ? followUpSnippet : null}
 	/>
 {:else}
-	<WorkflowStream {events} {interactions} {toolIcons} labels={streamLabels} />
+	<WorkflowStream {events} {interactions} {toolIcons} {ticking} {drafts} labels={streamLabels} />
 {/if}

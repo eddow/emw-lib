@@ -203,14 +203,27 @@ const result = await tick(runId, {
 })
 ```
 
-4. **Stream route** (`GET /api/workflows/[runId]/stream?after_idx=N`, poll-only for
-v1 — no SSE, no new tables): replay journal rows with `idx >= N` as
+4. **Stream route** (`GET /api/workflows/[runId]/stream?after_idx=N`, poll-only until
+S7 retires it — the FE moves to Alfred's run-stream plane in S6): replay journal
+rows with `idx >= N` as
 `interaction_opened` + `interaction_resolved` events plus terminal `run_status`.
 Ask-human exception: open + answered `ask-human` rows also ship
 `askHuman: [{ idx, question, options, answer? }]` (from `input_json` /
 `output_json`) so the pinned card renders the real question, not the
 `describeStep` one-liner. Nothing else crosses the wire. Reference:
 `arb2b/src/routes/api/workflows/[runId]/stream/+server.ts`.
+Run-stream plane (S1–S4, `butler/docs/alfred.md` §7.4): the host registers the
+run (`POST /wfruns` at `start`, credential handed to the FE in the start
+response), publishes every journal mutation it commits in the same request
+(tick `onEvent` sink → `interaction_opened`/`run_status`; `executeTool`
+resolve/fail → `interaction_resolved`; `/resolve` webhook → resolution;
+`answer` → resolution + `human_answer`; `cancel` → `run_status: cancelled`;
+terminal tick end → terminal `run_status`), and re-mints on reload
+(`POST /wfruns/{rid}/play` in the chat `load`). Publish is best-effort (a
+failure never fails the tick); the journal stays the source of truth. Client
+surface: `AlfredClient.registerWorkflowRun` / `playWorkflowRun` /
+`publishWorkflowEvents` (BE) + `streamWorkflowEvents` / `pollWorkflowEvents` /
+`setRunStreamCredential` (FE).
 5. **Cancel route** (`POST /api/workflows/[runId]/cancel`): `cancelRun(runId, sql)`
 (terminal-guarded in the lib — no-op on `done`/`error`/`cancelled`); journal
 preserved, no re-execution. Ownership re-checked (`getOwnRun`, 404 otherwise).
@@ -246,7 +259,9 @@ locals.user.id` (pinned by `isolation.test.ts`).
 ## Open host work (engine done, host-side residuals)
 
 - **Real-DB migrate pass**: `db:migrate` on fresh + existing DB, journal smoke incl. the `appendLogbook` UNNEST (unit fakes prove statement shape only).
-- **`interaction_resolved` / `human_*` / `log` emission**: the driver emits `interaction_opened` + `run_status` only; the rest belongs to the resolver/host transport (§4 above).
+- **`log` emission**: the driver emits `interaction_opened` + `run_status`; the
+resolver/host transport emits `interaction_resolved` + `human_*` (S4 done —
+`log` lines stay journal-only, never streamed).
 - **`bytes_used` / `opens_used` persistence**: the driver computes the `maxBytes` gate; the journal bumps `opens_used` on open — full column accounting still open.
 - **Floating-promise lint**: `@typescript-eslint/no-floating-promises` for `wf.*` documented in `driver.ts`, not enforced (no eslint config in repo).
 - **Pinned-claim routing** for tool webhooks: host-side, same contract as §5.

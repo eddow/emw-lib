@@ -316,6 +316,36 @@ describe('WorkflowStream reactivity', () => {
 			.element(screen.getByTestId('workflow-stream-status'))
 			.toHaveTextContent('En cours…')
 	})
+
+	it('shows working… from stream liveness (open row, no tick flag)', async () => {
+		expect.assertions(2)
+		const screen = await render(WorkflowTestHost, {
+			props: { events: [opened(0, 'Market step terms'), status('running')] },
+		})
+		await expect.element(screen.getByTestId('workflow-working')).toBeVisible()
+		await screen.rerender({
+			events: [
+				opened(0, 'Market step terms'),
+				{ type: 'interaction_resolved', idx: 0, status: 'resolved' },
+				status('done'),
+			],
+		})
+		expect(screen.container.querySelector('[data-testid="workflow-working"]')).toBeNull()
+	})
+
+	it('renders a live draft under its open prompt row', async () => {
+		expect.assertions(3)
+		const screen = await render(WorkflowTestHost, {
+			props: {
+				events: [opened(0, 'Ranking results'), status('running')],
+				drafts: { 0: 'draft text so far' },
+			},
+		})
+		const draft = screen.getByTestId('workflow-prompt-draft')
+		await expect.element(draft.first()).toBeVisible()
+		await expect.element(draft.first()).toHaveTextContent('draft text so far')
+		await expect.element(draft.first()).toHaveAttribute('data-idx', '0')
+	})
 })
 
 describe('Workflow overrides', () => {

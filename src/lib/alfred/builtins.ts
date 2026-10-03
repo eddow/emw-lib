@@ -290,6 +290,20 @@ export const BUILTIN_GENERIC: BuiltinToolDef[] = [
 		},
 	},
 	{
+		name: 'scrape',
+		description:
+			'Spec-driven page read: url (+ optional spec name) → validated data. Specs: annuaire.companies, annuaire.company, aosom.products, bodacc.record, bodacc.records, emag.products, europages.companies, europages.company, kompass.companies, kompass.company, pagesjaunes.pro, pagesjaunes.pros, supreva.products. Omitted spec = auto-match by URL.',
+		parameters: {
+			type: 'object',
+			properties: {
+				url: { type: 'string', description: 'Page URL to read.' },
+				spec: { type: 'string', description: 'Spec name (filename stem); omitted = auto-match by url_patterns.' },
+				max_chars: { type: 'number', description: 'LLM-fallback input cap (deterministic rules: always run on the full document).' },
+			},
+			required: ['url'],
+		},
+	},
+	{
 		name: 'image',
 		description: 'Raw vision read (describe|ocr|extract_table) behind inspect/extract.',
 		parameters: {
@@ -323,21 +337,29 @@ export const BUILTIN_SPECIALISED: BuiltinToolDef[] = [
 	{
 		name: 'serp_search',
 		description:
-			'Search a directory/marketplace (annuaire-entreprises, aosom, emag.ro, emag.bg, emag.hu, europages, kompass, pagesjaunes, supreva) — first page of entries.',
+			"Spec-driven directory/marketplace search (serps: annuaire-entreprises, aosom, bodacc, emag, europages, kompass, pagesjaunes, supreva — emag.ro/bg/hu are a lang shim for emag). Args per serp: terms?/lang?/page?/where?/category?/department?/dateFrom?/limit?/offset? + rerank?. Returns {entries: [{...item, url, id?}], maxPages: null when unknown}.",
 		parameters: {
 			type: 'object',
 			properties: {
-				source: { type: 'string' },
-				terms: { type: 'string' },
+				source: { type: 'string', description: 'Serp name (serps/*.yaml stem).' },
+				terms: { type: 'string', description: 'Raw query text (omitted for filter-only searches like bodacc).' },
+				lang: { type: 'string', description: 'Search language / site locale (e.g. emag ro|bg|hu).' },
+				where: { type: 'string', description: 'Location filter (pagesjaunes).' },
+				page: { type: 'number', description: 'Result page (1-based).' },
+				category: { type: 'string', description: 'BODACC notice family (bodacc).' },
+				department: { type: 'string', description: 'French department number (bodacc).' },
+				dateFrom: { type: 'string', description: 'BODACC earliest date, YYYY-MM-DD (bodacc).' },
+				limit: { type: 'number', description: 'Max entries (bodacc up to 100).' },
+				offset: { type: 'number', description: 'BODACC result offset.' },
 				rerank: { type: 'boolean' },
 			},
-			required: ['source', 'terms'],
+			required: ['source'],
 		},
 	},
 	{
 		name: 'serp_details',
 		description:
-			'Fetch a company/item detail record (annuaire-entreprises: 9-digit SIREN; others: id or URL).',
+			'Fetch a company/item detail record via the serp\'s details scraper (annuaire-entreprises, bodacc, europages, kompass, pagesjaunes; aosom/emag/supreva are search-only → use scrape). id = record key or URL.',
 		parameters: {
 			type: 'object',
 			properties: {
@@ -345,22 +367,6 @@ export const BUILTIN_SPECIALISED: BuiltinToolDef[] = [
 				id: { type: 'string' },
 			},
 			required: ['source', 'id'],
-		},
-	},
-	{
-		name: 'bodacc_leads',
-		description:
-			'Search BODACC company notices (creations, modifications, sales, ...) by category/department/date.',
-		parameters: {
-			type: 'object',
-			properties: {
-				category: { type: 'string' },
-				department: { type: 'string' },
-				dateFrom: { type: 'string' },
-				limit: { type: 'number' },
-				offset: { type: 'number' },
-			},
-			required: [],
 		},
 	},
 	{
