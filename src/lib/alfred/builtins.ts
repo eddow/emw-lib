@@ -319,6 +319,13 @@ export const BUILTIN_GENERIC: BuiltinToolDef[] = [
 ]
 
 /** Specialised domain accelerators (docs/tools.md §4). */
+/** Standard serp-search item: every `serp_search` list entry carries at least these. */
+export type SerpItem = {
+	title: string
+	url: string
+	id: string
+	[key: string]: unknown
+}
 export const BUILTIN_SPECIALISED: BuiltinToolDef[] = [
 	{
 		name: 'jev_match',
@@ -337,7 +344,7 @@ export const BUILTIN_SPECIALISED: BuiltinToolDef[] = [
 	{
 		name: 'serp_search',
 		description:
-			"Spec-driven directory/marketplace search (serps: annuaire-entreprises, aosom, bodacc, emag, europages, kompass, pagesjaunes, supreva — emag.ro/bg/hu are a lang shim for emag). Args per serp: terms?/lang?/page?/where?/category?/department?/dateFrom?/limit?/offset? + rerank?. Returns {entries: [{...item, url, id?}], maxPages: null when unknown}.",
+			'Spec-driven directory/marketplace search (serps: annuaire-entreprises, aosom, bodacc, emag, europages, kompass, pagesjaunes, supreva — emag.ro/bg/hu are a lang shim for emag). Args per serp: terms?/lang?/page?/where?/category?/department?/dateFrom?/limit?/offset? + rerank?. Returns {items: SerpItem[] (title, url, id), maxPages: null when unknown}.',
 		parameters: {
 			type: 'object',
 			properties: {
@@ -349,7 +356,7 @@ export const BUILTIN_SPECIALISED: BuiltinToolDef[] = [
 				category: { type: 'string', description: 'BODACC notice family (bodacc).' },
 				department: { type: 'string', description: 'French department number (bodacc).' },
 				dateFrom: { type: 'string', description: 'BODACC earliest date, YYYY-MM-DD (bodacc).' },
-				limit: { type: 'number', description: 'Max entries (bodacc up to 100).' },
+				limit: { type: 'number', description: 'Max items (bodacc up to 100).' },
 				offset: { type: 'number', description: 'BODACC result offset.' },
 				rerank: { type: 'boolean' },
 			},

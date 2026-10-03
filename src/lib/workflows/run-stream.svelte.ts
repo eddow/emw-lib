@@ -197,7 +197,7 @@ export class WorkflowRunStream {
 		try {
 			while (!ac.signal.aborted) {
 				try {
-					await this.#withStream(async () => {
+					await this.#withStream(ac, async () => {
 						for await (const evt of this.#client.streamWorkflowEvents(
 							rid,
 							this.lastSeq,
@@ -248,14 +248,15 @@ export class WorkflowRunStream {
 	 * `401`/`410`. Without {@link WorkflowRunStreamOptions.refreshStream} the
 	 * error propagates unchanged.
 	 */
-	async #withStream<T>(fn: () => Promise<T>): Promise<T> {
+	async #withStream<T>(ac: AbortController, fn: () => Promise<T>): Promise<T> {
 		try {
 			return await fn()
 		} catch (err) {
 			if (
 				!this.#refreshStream ||
 				!(err instanceof AlfredError) ||
-				(err.status !== 401 && err.status !== 410)
+				(err.status !== 401 && err.status !== 410) ||
+				ac.signal.aborted
 			)
 				throw err
 			const credential = await this.#refreshStream()
