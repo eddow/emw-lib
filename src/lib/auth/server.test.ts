@@ -114,6 +114,14 @@ describe('readAuthEnv', () => {
 			}).baseUrl
 		).toBe('https://canonical.example')
 	})
+	it('prefers explicit PUBLIC_BASE_URL over a stale localhost VERCEL_URL (prod bug)', () => {
+		expect(
+			readAuthEnv({
+				PUBLIC_BASE_URL: 'https://arb2b.emedware.dev',
+				VERCEL_URL: 'http://localhost:5173/',
+			}).baseUrl
+		).toBe('https://arb2b.emedware.dev')
+	})
 	it('trims values and picks up tenant/issuer extras', () => {
 		const env = readAuthEnv({
 			AUTH_MICROSOFT_ID: ' mid ',

@@ -145,6 +145,10 @@ export interface LoginLabels {
 	email?: string
 	/** Field label. Default `'Password'`. */
 	password?: string
+	/** Repeat-password field label (sign-up + reset). Default `'Repeat password'`. */
+	confirmPassword?: string
+	/** Mismatch error (sign-up + reset). Default `'Passwords do not match'`. */
+	passwordMismatch?: string
 	/** Sign-up submit. Default `'Sign up'`. */
 	signUp?: string
 	/** Sign-in submit. Default `'Sign in'`. */

@@ -108,9 +108,11 @@ function withScheme(raw: string | undefined | null): string | undefined {
  * hosts, `https://` added). `undefined` is the GOOD case: `createAuth`
  * then omits `baseURL` and better-auth derives the origin per-request
  * from `request.url` — correct on prod, preview and custom domains with
- * zero config. Never fall back to a localhost default here: a baked-in
- * `http://localhost:5173` is exactly what produced
- * `redirect_uri=http://localhost:5173/auth/callback/google` on prod.
+ * zero config. `VERCEL_URL` ranks LAST on purpose: on Vercel it is the
+ * internal deployment host (`*.vercel.app`), never the canonical custom
+ * domain — letting it win over an explicit `PUBLIC_BASE_URL` is exactly
+ * what produced `redirect_uri=http://localhost:5173/auth/callback/google`
+ * on prod (a stale/localhost `VERCEL_URL` baked into the deployment env).
  */
 
 /** Join roles for the `role` column. Sorted + deduped for stable writes. */
@@ -155,13 +157,13 @@ export function readAuthEnv(raw: Record<string, string | undefined>): AuthEnv {
 	return {
 		secret: raw.AUTH_SECRET ?? '',
 		baseUrl:
-			withScheme(raw.VERCEL_URL) ??
-			withScheme(raw.VERCEL_PROJECT_PRODUCTION_URL) ??
 			cleanUrl(raw.PUBLIC_BASE_URL) ??
 			cleanUrl(raw.BETTER_AUTH_URL) ??
 			cleanUrl(raw.BASE_URL) ??
 			cleanUrl(raw.ORIGIN) ??
 			cleanUrl(raw.AUTH_URL) ??
+			withScheme(raw.VERCEL_PROJECT_PRODUCTION_URL) ??
+			withScheme(raw.VERCEL_URL) ??
 			undefined,
 		enabledProviders: raw.AUTH_ENABLED_PROVIDERS,
 		trustedOrigins: splitList(raw.AUTH_TRUSTED_ORIGINS).length
