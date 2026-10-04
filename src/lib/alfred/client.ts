@@ -885,7 +885,6 @@ export class AlfredClient {
 		}
 		if (this.webhookSecret) headers['x-alfred-secret'] = this.webhookSecret
 		init.headers = headers
-		console.log(`Alfred's whatsapp: ${this.baseUrl}${path}`)
 		const res = await this.send(`${this.baseUrl}${path}`, init, signal, timeoutMs)
 		if (!res.ok) throw await this.httpError(res)
 		if (expectStatus !== undefined && res.status !== expectStatus) {
