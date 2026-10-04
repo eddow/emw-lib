@@ -318,6 +318,7 @@ export class AlfredClient {
 		input: CreateSessionInput,
 		signal?: AbortSignal
 	): Promise<{ session_id: string }> {
+		console.log('createSession:', input)
 		if (!input?.agent?.model) invalid('agent.model is required')
 		const body = compact({
 			agent: input.agent,
