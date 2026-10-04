@@ -318,7 +318,6 @@ export class AlfredClient {
 		input: CreateSessionInput,
 		signal?: AbortSignal
 	): Promise<{ session_id: string }> {
-		console.log('createSession:', input)
 		if (!input?.agent?.model) invalid('agent.model is required')
 		const body = compact({
 			agent: input.agent,
@@ -326,7 +325,6 @@ export class AlfredClient {
 			metadata: input.metadata,
 			credentials: input.credentials,
 		})
-		console.log('Creating session:', body)
 		return this.beJson('POST', '/sessions', body, signal)
 	}
 
@@ -887,6 +885,7 @@ export class AlfredClient {
 		}
 		if (this.webhookSecret) headers['x-alfred-secret'] = this.webhookSecret
 		init.headers = headers
+		console.log(`Alfred's whatsapp: ${this.baseUrl}${path}`)
 		const res = await this.send(`${this.baseUrl}${path}`, init, signal, timeoutMs)
 		if (!res.ok) throw await this.httpError(res)
 		if (expectStatus !== undefined && res.status !== expectStatus) {
