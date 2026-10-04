@@ -297,8 +297,15 @@ export const BUILTIN_GENERIC: BuiltinToolDef[] = [
 			type: 'object',
 			properties: {
 				url: { type: 'string', description: 'Page URL to read.' },
-				spec: { type: 'string', description: 'Spec name (filename stem); omitted = auto-match by url_patterns.' },
-				max_chars: { type: 'number', description: 'LLM-fallback input cap (deterministic rules: always run on the full document).' },
+				spec: {
+					type: 'string',
+					description: 'Spec name (filename stem); omitted = auto-match by url_patterns.',
+				},
+				max_chars: {
+					type: 'number',
+					description:
+						'LLM-fallback input cap (deterministic rules: always run on the full document).',
+				},
 			},
 			required: ['url'],
 		},
@@ -349,8 +356,14 @@ export const BUILTIN_SPECIALISED: BuiltinToolDef[] = [
 			type: 'object',
 			properties: {
 				source: { type: 'string', description: 'Serp name (serps/*.yaml stem).' },
-				terms: { type: 'string', description: 'Raw query text (omitted for filter-only searches like bodacc).' },
-				lang: { type: 'string', description: 'Search language / site locale (e.g. emag ro|bg|hu).' },
+				terms: {
+					type: 'string',
+					description: 'Raw query text (omitted for filter-only searches like bodacc).',
+				},
+				lang: {
+					type: 'string',
+					description: 'Search language / site locale (e.g. emag ro|bg|hu).',
+				},
 				where: { type: 'string', description: 'Location filter (pagesjaunes).' },
 				page: { type: 'number', description: 'Result page (1-based).' },
 				category: { type: 'string', description: 'BODACC notice family (bodacc).' },
@@ -366,7 +379,7 @@ export const BUILTIN_SPECIALISED: BuiltinToolDef[] = [
 	{
 		name: 'serp_details',
 		description:
-			'Fetch a company/item detail record via the serp\'s details scraper (annuaire-entreprises, bodacc, europages, kompass, pagesjaunes; aosom/emag/supreva are search-only → use scrape). id = record key or URL.',
+			"Fetch a company/item detail record via the serp's details scraper (annuaire-entreprises, bodacc, europages, kompass, pagesjaunes; aosom/emag/supreva are search-only → use scrape). id = record key or URL.",
 		parameters: {
 			type: 'object',
 			properties: {

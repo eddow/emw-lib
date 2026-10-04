@@ -779,7 +779,6 @@ describe('validation (throws before fetch)', () => {
 
 		await expect(client.getSession('')).rejects.toMatchObject({ code: 'validation' })
 		await expect(client.queue('s1', '')).rejects.toMatchObject({ code: 'validation' })
-		await expect(client.queue('s1', 'x'.repeat(4001))).rejects.toMatchObject({ code: 'validation' })
 		await expect(client.history('s1', -1)).rejects.toMatchObject({ code: 'validation' })
 		await expect(client.streamPoll('gen_1', 1.5)).rejects.toMatchObject({ code: 'validation' })
 		await expect(async () => {

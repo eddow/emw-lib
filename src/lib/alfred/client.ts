@@ -58,8 +58,10 @@ export const ALFRED_DEFAULT_BASE_URL = 'http://localhost:8192'
 /** Default per-request timeout (ms) when no `signal` is supplied. */
 export const ALFRED_DEFAULT_TIMEOUT_MS = 30_000
 
-/** Max accepted prompt length, mirroring the server's validation. */
-export const ALFRED_MAX_PROMPT = 4000
+/** `prompt` must be a non-empty string (no upper bound — Alfred stores it as-is). */
+function assertPrompt(prompt: string): void {
+	if (typeof prompt !== 'string' || prompt.length < 1) invalid('prompt must be non-empty')
+}
 
 export interface AlfredClientOptions {
 	/**
@@ -127,12 +129,6 @@ function assertRid(rid: string): void {
 /** `gid` must be a non-empty string. */
 function assertGid(gid: string): void {
 	if (typeof gid !== 'string' || gid.trim() === '') invalid('gid must be a non-empty string')
-}
-
-/** `prompt` must be 1..{@link ALFRED_MAX_PROMPT} chars. */
-function assertPrompt(prompt: string): void {
-	if (typeof prompt !== 'string' || prompt.length < 1 || prompt.length > ALFRED_MAX_PROMPT)
-		invalid(`prompt must be 1..${ALFRED_MAX_PROMPT} chars`)
 }
 
 /** `after_seq` must be an integer >= 0. */

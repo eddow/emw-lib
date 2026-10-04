@@ -23,5 +23,10 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	// Same wire shape as the real `answer` route (which re-ticks past the
 	// row); the mock answers without ticking, so `returnValue` is the run's
 	// current output (`null` until `done`).
-	return Response.json({ runId, idx, status: row.status, returnValue: getMockRun(runId)?.output ?? null })
+	return Response.json({
+		runId,
+		idx,
+		status: row.status,
+		returnValue: getMockRun(runId)?.output ?? null,
+	})
 }
