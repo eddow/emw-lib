@@ -325,6 +325,7 @@ export class AlfredClient {
 			metadata: input.metadata,
 			credentials: input.credentials,
 		})
+		console.log('Creating session:', body)
 		return this.beJson('POST', '/sessions', body, signal)
 	}
 
