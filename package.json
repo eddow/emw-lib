@@ -17,6 +17,14 @@
 			"types": "./src/lib/alfred/server.ts",
 			"default": "./src/lib/alfred/server.ts"
 		},
+		"./alfred/client": {
+			"types": "./src/lib/alfred/client.ts",
+			"default": "./src/lib/alfred/client.ts"
+		},
+		"./alfred/tools": {
+			"types": "./src/lib/alfred/tools.ts",
+			"default": "./src/lib/alfred/tools.ts"
+		},
 		"./auth-server": {
 			"types": "./src/lib/auth/server.ts",
 			"default": "./src/lib/auth/server.ts"
@@ -43,6 +51,7 @@
 	"scripts": {
 		"dev": "vite dev",
 		"build": "vite build",
+		"tsc": "tsc",
 		"preview": "vite preview",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",

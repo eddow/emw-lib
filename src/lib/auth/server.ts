@@ -13,7 +13,7 @@
  * - `locale` / `theme`: persisted UI preferences (cookie > DB row > browser).
  */
 
-import { type BetterAuthOptions, type BetterAuthPlugin, betterAuth } from 'better-auth'
+import { type Auth, type BetterAuthOptions, type BetterAuthPlugin, betterAuth } from 'better-auth'
 import { admin } from 'better-auth/plugins'
 
 export interface OAuthCred {
@@ -223,11 +223,14 @@ function buildSocialProviders(env: AuthEnv): Record<string, OAuthCred> {
 	return out
 }
 
+// TODO: Specify
+export type EmwAuth = Auth<any>
+
 /**
  * Build the better-auth instance for the host app. Call once
  * (`src/lib/server/auth.ts`: `export const auth = createAuth(env, db)`).
  */
-export function createAuth(env: AuthEnv, db: AuthDb) {
+export function createAuth(env: AuthEnv, db: AuthDb): EmwAuth {
 	if (!env.secret) throw new Error('createAuth: AUTH_SECRET is not set')
 	const effective = new Set(effectiveAllowlist(env))
 	return betterAuth({
@@ -281,8 +284,6 @@ export function createAuth(env: AuthEnv, db: AuthDb) {
 		],
 	})
 }
-
-export type Auth = ReturnType<typeof createAuth>
 
 /** Session + user as resolved in hooks (`auth.api.getSession`). */
 export interface ResolvedSession {
