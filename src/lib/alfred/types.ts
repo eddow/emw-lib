@@ -86,7 +86,7 @@ export interface CreateSessionInput {
 	 * Per-app LLM credentials (BE-owned). Alfred stores the key on the
 	 * session so background continuations work with no BE in the loop.
 	 */
-	credentials?: { openrouter_api_key?: string }
+	credentials?: { openrouter_api_key?: string; google_api_key?: string }
 }
 
 /** Body of `POST /sessions/{id}/prompt` — creates a generation + starts it. */
@@ -273,8 +273,8 @@ export interface ToolCallInput {
 	session_id?: string
 	execution?: ExecutionConfig
 	webhook_url?: string
-	/** Stateless direct-call key (no session lookup): `{ openrouter_api_key }`. */
-	credentials?: { openrouter_api_key?: string }
+	/** Stateless direct-call key (no session lookup): `{ openrouter_api_key, google_api_key }`. */
+	credentials?: { openrouter_api_key?: string; google_api_key?: string }
 }
 
 /**

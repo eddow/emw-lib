@@ -1,15 +1,15 @@
 <script lang="ts">
 	import type { Component } from 'svelte'
-	import { AlfredClient } from './client.js'
-	import { renderMarkdown } from './markdown.js'
-	import { GenerationStream } from './session.svelte.js'
-	import { buildTranscript, type ChatMessage } from './transcript.js'
 	import AskHumanCard from './AskHumanCard.svelte'
+	import { AlfredClient } from './client.js'
 	import HumanJsonFallback from './HumanJsonFallback.svelte'
+	import { renderMarkdown } from './markdown.js'
 	import RetryBox from './RetryBox.svelte'
 	import StatusLine from './StatusLine.svelte'
+	import { GenerationStream } from './session.svelte.js'
 	import ThoughtRow from './ThoughtRow.svelte'
 	import ToolCallRow from './ToolCallRow.svelte'
+	import { buildTranscript, type ChatMessage } from './transcript.js'
 	import type { HistoryItem, HumanAnswer, StreamCredential } from './types.js'
 
 	/**

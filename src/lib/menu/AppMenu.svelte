@@ -215,10 +215,10 @@
 	)
 
 	let configOpen = $state(false)
-	let configTimer: ReturnType<typeof setTimeout> | undefined = undefined
+	let configTimer: ReturnType<typeof setTimeout> | undefined 
 	// Uncontrolled open state per slot id (controlled slots use `open`/`onToggle`).
 	let slotOpen = $state<Record<string, boolean>>({})
-	let slotTimer: ReturnType<typeof setTimeout> | undefined = undefined
+	let slotTimer: ReturnType<typeof setTimeout> | undefined 
 
 	function cancelConfigHide(): void {
 		if (configTimer !== undefined) {

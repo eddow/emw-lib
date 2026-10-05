@@ -1,6 +1,6 @@
 <script lang="ts">
-	import LoginScreen from './LoginScreen.svelte'
 	import type { AuthClient } from './LoginScreen.svelte'
+	import LoginScreen from './LoginScreen.svelte'
 	import type { LoginLabels } from './types.js'
 
 	let { client, labels = {} }: { client?: AuthClient; labels?: LoginLabels } = $props()

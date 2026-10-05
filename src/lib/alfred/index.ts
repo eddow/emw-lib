@@ -1,6 +1,5 @@
 export { default as AskHumanCard } from './AskHumanCard.svelte'
 export * from './builtins.js'
-export type { ChatSendMode } from './types-public.js'
 export { default as AlfredChat } from './Chat.svelte'
 export * from './client.js'
 export { default as HumanJsonFallback } from './HumanJsonFallback.svelte'
@@ -60,3 +59,4 @@ export type {
 	WorkflowRunPollResponse,
 	WorkflowRunStreamCredential,
 } from './types.js'
+export type { ChatSendMode } from './types-public.js'

@@ -20,10 +20,10 @@
 
 <script lang="ts">
 	import {
-		credentialFlows,
-		listSocialProviders,
 		type AuthProvider,
-		type LoginLabels
+		credentialFlows,
+		type LoginLabels, 
+		listSocialProviders
 	} from './types.js'
 
 	/** Host-provided facade over `better-auth/svelte` (structural, swappable). */

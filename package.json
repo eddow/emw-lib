@@ -13,6 +13,10 @@
 			"types": "./src/lib/index.ts",
 			"default": "./src/lib/index.ts"
 		},
+		"./cli": {
+			"types": "./src/lib/cli.ts",
+			"default": "./src/lib/cli.ts"
+		},
 		"./alfred-server": {
 			"types": "./src/lib/alfred/server.ts",
 			"default": "./src/lib/alfred/server.ts"
@@ -24,6 +28,14 @@
 		"./alfred/tools": {
 			"types": "./src/lib/alfred/tools.ts",
 			"default": "./src/lib/alfred/tools.ts"
+		},
+		"./alfred/ask-human": {
+			"types": "./src/lib/alfred/ask-human.ts",
+			"default": "./src/lib/alfred/ask-human.ts"
+		},
+		"./alfred/types": {
+			"types": "./src/lib/alfred/types.ts",
+			"default": "./src/lib/alfred/types.ts"
 		},
 		"./auth-server": {
 			"types": "./src/lib/auth/server.ts",
@@ -65,16 +77,9 @@
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.13",
 		"@inlang/paraglide-js": "^2.18.2",
-		"@playwright/test": "^1.60.0",
-		"@sveltejs/adapter-auto": "^7.0.1",
-		"@sveltejs/kit": "^2.63.0",
-		"@sveltejs/vite-plugin-svelte": "^7.1.2",
-		"@tailwindcss/vite": "^4.3.0",
 		"@types/node": "^22.20.2",
 		"@vitest/browser-playwright": "^4.1.8",
 		"playwright": "^1.60.0",
-		"svelte": "^5.56.1",
-		"svelte-check": "^4.6.0",
 		"tailwindcss": "^4.3.0",
 		"typescript": "^6.0.3",
 		"vite": "^8.0.16",
@@ -84,6 +89,17 @@
 	"dependencies": {
 		"@neondatabase/serverless": "^1.1.0",
 		"@sentry/sveltekit": "^11.1.0",
-		"better-auth": "^1.7.6"
+		"better-auth": "^1.7.6",
+		"is-interactive": "^2.0.0"
+	},
+	"peerDependencies": {
+		"@playwright/test": "^1.60.0",
+		"@sveltejs/adapter-auto": "^7.0.1",
+		"@sveltejs/kit": "^2.63.0",
+		"@sveltejs/vite-plugin-svelte": "^7.1.2",
+		"@tailwindcss/vite": "^4.3.0",
+		"@inquirer/prompts": "^7.2.1",
+		"svelte": "^5.56.1",
+		"svelte-check": "^4.6.0"
 	}
 }

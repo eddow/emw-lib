@@ -1,11 +1,11 @@
 <script lang="ts">
+	import type { WorkflowInputField } from './define.js'
+	import type { WorkflowInteractionLite } from './display.js'
+	import type { WorkflowStreamEvent } from './types.js'
 	import WorkflowInputForm from './WorkflowInputForm.svelte'
 	import WorkflowOutput from './WorkflowOutput.svelte'
 	import WorkflowPane from './WorkflowPane.svelte'
 	import WorkflowStream from './WorkflowStream.svelte'
-	import type { WorkflowInputField } from './define.js'
-	import type { WorkflowInteractionLite } from './display.js'
-	import type { WorkflowStreamEvent } from './types.js'
 
 	let {
 		fields = [],

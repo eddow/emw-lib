@@ -223,6 +223,12 @@ function buildSocialProviders(env: AuthEnv): Record<string, OAuthCred> {
 	return out
 }
 
+export const authAdditionalFields = {
+	role: { type: 'string', required: false, defaultValue: 'viewer', input: false },
+	locale: { type: 'string', required: false, input: true },
+	theme: { type: 'string', required: false, input: true },
+} as const
+
 // TODO: Specify
 export type EmwAuth = Auth<any>
 
@@ -272,11 +278,7 @@ export function createAuth(env: AuthEnv, db: AuthDb): EmwAuth {
 		},
 		socialProviders: buildSocialProviders(env),
 		user: {
-			additionalFields: {
-				role: { type: 'string', required: false, defaultValue: 'viewer', input: false },
-				locale: { type: 'string', required: false, input: true },
-				theme: { type: 'string', required: false, input: true },
-			},
+			additionalFields: authAdditionalFields,
 		},
 		plugins: [
 			admin({ defaultRole: 'viewer' }),

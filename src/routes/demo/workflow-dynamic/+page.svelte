@@ -2,9 +2,9 @@
 	import { untrack } from 'svelte'
 	import { AlfredClient, type WorkflowRunStreamCredential } from '$lib/alfred/index.js'
 	import {
+		type WorkflowInteractionLite,
 		WorkflowPane,
 		WorkflowRunStream,
-		type WorkflowInteractionLite,
 		type WorkflowStreamEvent
 	} from '$lib/workflows/index.js'
 

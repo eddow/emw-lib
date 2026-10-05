@@ -56,7 +56,7 @@
 		remaining = msg.retry.retryAfterS ?? 0
 	})
 
-	async function handleRetry(auto = false): Promise<void> {
+	async function handleRetry(_auto = false): Promise<void> {
 		if (dismissed || retrying) return
 		retrying = true
 		try {
@@ -84,7 +84,9 @@
 			<span aria-hidden="true">{isRateLimit ? '🐌' : '⚠️'}</span>
 			<span data-testid="alfred-retry-summary">{msg.text}</span>
 			{#if isRateLimit && remaining > 0}
-				<span data-testid="alfred-retry-countdown">{labels.retryingIn?.(remaining) ?? `retrying in ${remaining}s…`}</span>
+				<span data-testid="alfred-retry-countdown"
+					>{labels.retryingIn?.(remaining) ?? `retrying in ${remaining}s…`}</span
+				>
 			{/if}
 		</div>
 		<details class="alfred-retry-detail" data-testid="alfred-retry-detail">
@@ -100,7 +102,9 @@
 			>
 				{retrying ? (labels.retrying ?? 'Retrying…') : (labels.keepRetry ?? 'Keep / Try again')}
 			</button>
-			<button type="button" data-testid="alfred-retry-dismiss" onclick={dismiss}>{labels.dismiss ?? 'Dismiss'}</button>
+			<button type="button" data-testid="alfred-retry-dismiss" onclick={dismiss}
+				>{labels.dismiss ?? 'Dismiss'}</button
+			>
 		</div>
 	</div>
 {/if}
