@@ -203,6 +203,7 @@ export type DurableType =
 	| 'error'
 	| 'human_question'
 	| 'human_answer'
+	| 'delay'
 
 /** Ephemeral event types — live only, never stored. */
 export type DeltaType = 'thought_delta' | 'answer_delta' | 'tool_use_delta'
