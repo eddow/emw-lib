@@ -53,7 +53,7 @@ const SENSITIVE_KEYS = new Set([
 	'alfred_webhook_secret',
 	'alfred_stream_secret',
 	'openrouter_api_key',
-	'brave_api_key',
+	'serper_api_key',
 	'resend_api_key',
 	'vapid_private_key',
 	'auth_secret',

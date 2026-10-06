@@ -117,11 +117,14 @@ export const BUILTIN_GENERIC: BuiltinToolDef[] = [
 	{
 		name: 'web_search',
 		description:
-			'Keyword web search returning title/url entries (Brave API when configured, else DuckDuckGo).',
+			'Keyword web search returning title/url entries (Serper API when configured, else DuckDuckGo).',
 		parameters: {
 			type: 'object',
 			properties: {
 				q: { type: 'string' },
+                gl: {type: "string", description: "2-letters Country code"},
+                hl: {type: "string", description: "2-letters Language code"},
+                // TODO: "tbs": "qdr:#" h-d-w-m-y: last hour-day-...-year
 				limit: { type: 'number' },
 				rerank: { type: 'boolean' },
 			},
