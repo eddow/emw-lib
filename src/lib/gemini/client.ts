@@ -1,7 +1,7 @@
 /**
  * Gemini model client wrapper
  */
-import type { FetchFn } from '../openrouter/client.js'
+import type { FetchFn } from '../openrouter/types.js'
 
 export interface GeminiModel {
 	name: string
