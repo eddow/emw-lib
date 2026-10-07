@@ -95,6 +95,7 @@ export interface PromptInput {
 	/** Per-generation callback destination (§8). Required in prod, optional in dev. */
 	webhook_url?: string
 	policy_override?: Record<string, unknown>
+	response_format?: any
 }
 
 /** `prompt` / idle-`queue` response: the generation + its first stream capability. */
