@@ -122,8 +122,8 @@ export const BUILTIN_GENERIC: BuiltinToolDef[] = [
 			type: 'object',
 			properties: {
 				q: { type: 'string' },
-				gl: { type: 'string', description: '2-letters Country code' },
-				hl: { type: 'string', description: '2-letters Language code' },
+				country: { type: 'string', description: '2-letters Country code' },
+				language: { type: 'string', description: '2-letters Language code' },
 				// TODO: "tbs": "qdr:#" h-d-w-m-y: last hour-day-...-year
 				limit: { type: 'number' },
 				rerank: { type: 'boolean' },

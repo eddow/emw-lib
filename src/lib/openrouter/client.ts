@@ -15,7 +15,10 @@
 import type { FetchFn, OpenRouterModel } from './types.js'
 
 /** OpenRouter models-list endpoint. */
-export const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models'
+export const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
+export const OPENROUTER_MODELS_URL = `${OPENROUTER_BASE_URL}/models`
+export const OPENROUTER_KEY_INFO_URL = `${OPENROUTER_BASE_URL}/key`
+export const OPENROUTER_CREDITS_INFO_URL = `${OPENROUTER_BASE_URL}/credits`
 
 /** Default per-request timeout (ms) when no `signal` is supplied. */
 export const OPENROUTER_DEFAULT_TIMEOUT_MS = 30_000
@@ -30,7 +33,7 @@ export interface OpenRouterClientOptions {
 	 * Models-list endpoint URL. Defaults to {@link OPENROUTER_MODELS_URL}.
 	 * Trailing slashes trimmed.
 	 */
-	baseUrl?: string
+	modelsUrl?: string
 	/** Injectable fetch, default global `fetch`. */
 	fetchFn?: FetchFn
 	/** Default timeout in ms, default {@link OPENROUTER_DEFAULT_TIMEOUT_MS}. A per-call `signal` wins. */
@@ -72,7 +75,7 @@ export class OpenRouterClient {
 	constructor(opts: OpenRouterClientOptions) {
 		if (!opts?.apiKey) invalid('apiKey is required')
 		this.apiKey = opts.apiKey
-		this.baseUrl = (opts.baseUrl ?? OPENROUTER_MODELS_URL).replace(/\/+$/, '')
+		this.baseUrl = (opts.modelsUrl ?? OPENROUTER_MODELS_URL).replace(/\/+$/, '')
 		this.fetchFn = opts.fetchFn ?? fetch
 		this.defaultTimeoutMs = opts.defaultTimeoutMs ?? OPENROUTER_DEFAULT_TIMEOUT_MS
 	}
@@ -151,5 +154,33 @@ export class OpenRouterClient {
 				? String((detail as { error: unknown }).error)
 				: undefined) ?? `HTTP ${res.status} ${res.statusText}`
 		return new OpenRouterError(message, { status: res.status, code: 'http', detail })
+	}
+	async keyInfo() {
+		const rv = await this.fetchFn(OPENROUTER_KEY_INFO_URL, {
+			method: 'GET',
+			headers: {
+				authorization: `Bearer ${this.apiKey}`,
+			},
+		})
+		return (await rv.json())?.data
+	}
+	async creditsInfo() {
+		const rv = await this.fetchFn(OPENROUTER_CREDITS_INFO_URL, {
+			method: 'GET',
+			headers: {
+				authorization: `Bearer ${this.apiKey}`,
+			},
+		})
+		return (await rv.json())?.data
+	}
+	async remaining() {
+		const keyInfo = await this.keyInfo()
+		const creditInfo = await this.creditsInfo()
+		return {
+			free: keyInfo.is_free_tier
+				? keyInfo.is_free_tier.limit_remaining
+				: keyInfo.free_model_daily_requests.remaining,
+			credits: creditInfo.total_credits - creditInfo.total_usage,
+		}
 	}
 }

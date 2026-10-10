@@ -94,7 +94,7 @@ describe('transport', () => {
 		const client = new OpenRouterClient({
 			apiKey: 'k',
 			fetchFn: fn,
-			baseUrl: 'https://example.test/models/',
+			modelsUrl: 'https://example.test/models/',
 		})
 		await client.listModels()
 		// trailing slash on baseUrl is trimmed

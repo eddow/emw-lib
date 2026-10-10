@@ -362,7 +362,7 @@ export class AlfredClient {
 				prompt: input.prompt,
 				webhook_url: input.webhook_url,
 				policy_override: input.policy_override,
-				response_format: input.response_format
+				response_format: input.response_format,
 			}),
 			signal,
 			201
